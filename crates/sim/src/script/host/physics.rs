@@ -132,13 +132,14 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
 
 pub(crate) fn select_usables(world: &mut World) {
     super::triggers::refresh_claims(world);
+    let replacement = RoundScript::new(world.resource::<crate::script::MatchScript>());
+    let mut runtime = std::mem::replace(&mut *world.resource_mut::<RoundScript>(), replacement);
     let usables: Vec<(
         u64,
         [f32; 3],
         super::entities::Usable,
         super::triggers::TriggerPolicy,
     )> = {
-        let mut runtime = world.resource_mut::<RoundScript>();
         let candidates: Vec<(u64, super::entities::Usable, super::triggers::TriggerPolicy)> =
             runtime
                 .entities
@@ -161,15 +162,14 @@ pub(crate) fn select_usables(world: &mut World) {
             )
             .collect()
     };
-    let clients: Vec<u32> = world
-        .resource::<RoundScript>()
+    let clients: Vec<(u32, u64)> = runtime
         .players
-        .keys()
-        .copied()
+        .iter()
+        .map(|(client, slot)| (*client, slot.object))
         .collect();
     let mut selected = std::collections::BTreeMap::new();
     let mut frame = FrameWorld::from_world(world);
-    for client in clients {
+    for (client, player) in clients {
         let id = ClientId(client);
         if !frame.client_meta(id).is_some_and(|m| {
             m.lifecycle == crate::ClientLifecycle::Alive && !m.controls.usability_disabled
@@ -189,11 +189,24 @@ pub(crate) fn select_usables(world: &mut World) {
             .filter(|(_, _, usable, policy)| {
                 !usable.barred.contains(&client) && policy.allows(&frame, client)
             })
-            .map(|(object, at, usable, _)| {
+            .filter_map(|(object, at, usable, _)| {
                 let d2: f32 = (0..3).map(|i| (at[i] - eye[i]).powi(2)).sum();
-                (d2, *object, usable)
+                let in_radius = d2 <= USE_RADIUS * USE_RADIUS;
+                let touch = runtime.entities[object].classname.as_ref() == "trigger_use_touch";
+                let offered = if touch {
+                    super::triggers::use_trigger_reach(
+                        &mut runtime,
+                        &frame,
+                        *object,
+                        client,
+                        player,
+                    )
+                    .unwrap_or(in_radius)
+                } else {
+                    in_radius
+                };
+                offered.then_some((d2, *object, usable))
             })
-            .filter(|(d2, _, _)| *d2 <= USE_RADIUS * USE_RADIUS)
             .min_by(|a, b| a.0.total_cmp(&b.0));
         let Some((_, object, usable)) = nearest else {
             continue;
@@ -206,5 +219,6 @@ pub(crate) fn select_usables(world: &mut World) {
             ps.cursor_hint_string = usable.hint;
         }
     }
-    world.resource_mut::<RoundScript>().use_selected = selected;
+    runtime.use_selected = selected;
+    *world.resource_mut::<RoundScript>() = runtime;
 }

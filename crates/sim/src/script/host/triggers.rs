@@ -877,6 +877,33 @@ fn toucher(runtime: &mut RoundScript, frame: &FrameWorld, object: u64) -> ([f32;
     (origin, origin)
 }
 
+fn reaches(
+    runtime: &mut RoundScript,
+    frame: &FrameWorld,
+    volume: &Volume<'_>,
+    look_at: bool,
+    client: u32,
+    player: u64,
+) -> bool {
+    let (mins, maxs) = toucher(runtime, frame, player);
+    volume.touches(mins, maxs) && (!look_at || looks_into(frame, client, volume))
+}
+
+pub(crate) fn use_trigger_reach(
+    runtime: &mut RoundScript,
+    frame: &FrameWorld,
+    trigger: u64,
+    client: u32,
+    player: u64,
+) -> Option<bool> {
+    if fires(&runtime.entities.get(&trigger)?.classname) != Some(Fires::Use) {
+        return None;
+    }
+    let volume = volume(runtime, frame, trigger)?;
+    let look_at = runtime.require_look_at.contains(&trigger);
+    Some(reaches(runtime, frame, &volume, look_at, client, player))
+}
+
 pub(crate) fn entity_bounds(world: &mut World, object: u64) -> ([f32; 3], [f32; 3]) {
     let runtime = world.resource::<RoundScript>();
     if runtime.player_client(object).is_some() {
@@ -971,8 +998,7 @@ pub(crate) fn dispatch_triggers(world: &mut World) {
                 if !eligible(&runtime, &frame, trigger, client, kind == Fires::Use) {
                     continue;
                 }
-                let (mins, maxs) = toucher(&mut runtime, &frame, player);
-                if !volume.touches(mins, maxs) || look_at && !looks_into(&frame, client, &volume) {
+                if !reaches(&mut runtime, &frame, &volume, look_at, client, player) {
                     continue;
                 }
                 raised.push((trigger, player));
