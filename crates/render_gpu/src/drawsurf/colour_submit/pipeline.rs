@@ -76,7 +76,10 @@ pub(super) fn kick_extracted_colour_pipelines(
     mut registry: ResMut<ExactPipelineRegistry>,
     pipeline: Res<ExactColourPipeline>,
     mut kicked: ResMut<ExactPipelineKickCache>,
-    mut warmup: ResMut<WorldPipelineWarmup>,
+    (mut warmup, mut learned): (
+        ResMut<WorldPipelineWarmup>,
+        ResMut<super::super::prewarm::LearnedFirstUse>,
+    ),
 ) {
     let extracted = frame.as_deref().map(ExtractedColourRefs::new);
     let world = extracted
@@ -88,10 +91,18 @@ pub(super) fn kick_extracted_colour_pipelines(
     }
     registry.poll();
 
+    let prewarm = super::super::prewarm::enabled();
+    let mut first_use = Vec::new();
     for key in registry.take_discovered() {
         if pipeline.get(key.port).is_some() {
+            if prewarm && registry.slot(&key).is_none() {
+                first_use.push(super::super::prewarm::key_hash(&key));
+            }
             request_exact_pipeline(&mut registry, &pipeline, &device, key);
         }
+    }
+    if !first_use.is_empty() {
+        learned.remember(&first_use);
     }
     kick_admitted_pipelines(
         extracted,
@@ -101,10 +112,12 @@ pub(super) fn kick_extracted_colour_pipelines(
         &pipeline,
         &mut kicked,
         &mut warmup,
+        &mut learned,
     );
     registry.flush(&device);
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn kick_admitted_pipelines(
     extracted: Option<ExtractedColourRefs<'_>>,
     views: &Query<(&ViewTarget, Option<&Msaa>), (With<Camera3d>, With<ViewUpscalingPipeline>)>,
@@ -113,6 +126,7 @@ pub(super) fn kick_admitted_pipelines(
     pipeline: &ExactColourPipeline,
     kicked: &mut ExactPipelineKickCache,
     warmup: &mut WorldPipelineWarmup,
+    learned: &mut super::super::prewarm::LearnedFirstUse,
 ) {
     let Some(extracted) = extracted else {
         return;
@@ -166,6 +180,7 @@ pub(super) fn kick_admitted_pipelines(
             device,
             &mut kicked.scheduled,
             &mut kicked.current,
+            learned,
         );
         kicked.demand_revision = extracted.frame.pipeline_demand_revision;
         diag::info!(
@@ -186,6 +201,7 @@ pub(super) fn kick_admitted_pipelines(
             device,
             &mut kicked.scheduled,
             &mut kicked.current,
+            learned,
         );
         kicked.demand_revision = extracted.frame.pipeline_demand_revision;
         diag::info!(
@@ -217,14 +233,21 @@ fn schedule_admitted_pipelines(
     device: &RenderDevice,
     scheduled: &mut HashSet<ExactColourPipelineKey>,
     current: &mut Vec<ExactPipelineSlot>,
+    learned: &mut super::super::prewarm::LearnedFirstUse,
 ) {
+    let light_techs: &[u8] = if super::super::prewarm::enabled() {
+        &super::super::prewarm::DYNAMIC_LIGHT_TECHS
+    } else {
+        &[]
+    };
     for (main_format, samples) in view_sig.iter().copied() {
         let techs = lighting_iw4::LIT_TECH_NO_SHADOW_DIR_SLOTS
             .into_iter()
             .chain(lighting_iw4::LIT_TECH_NO_SHADOW_LOCAL_SLOTS)
             .chain(lighting_iw4::LIT_TECH_SHADOW_DIR_SLOTS)
             .chain(lighting_iw4::LIT_TECH_SHADOW_SPOT_SLOTS)
-            .chain([super::super::SUN_SHADOW_CASTER_TECH, 5]);
+            .chain([super::super::SUN_SHADOW_CASTER_TECH, 5])
+            .chain(light_techs.iter().copied());
         for tech in techs {
             let shadow = tech == super::super::SUN_SHADOW_CASTER_TECH;
             for (material, prepared_pass) in
@@ -282,5 +305,79 @@ fn schedule_admitted_pipelines(
                 }
             }
         }
+    }
+    if super::super::prewarm::enabled() {
+        schedule_learned_pipelines(
+            prepared_table,
+            view_sig,
+            registry,
+            pipeline,
+            device,
+            scheduled,
+            current,
+            learned,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn schedule_learned_pipelines(
+    prepared_table: &render_material::PreparedMaterialTable,
+    view_sig: &[(TextureFormat, u32)],
+    registry: &mut ExactPipelineRegistry,
+    pipeline: &ExactColourPipeline,
+    device: &RenderDevice,
+    scheduled: &mut HashSet<ExactColourPipelineKey>,
+    current: &mut Vec<ExactPipelineSlot>,
+    learned: &mut super::super::prewarm::LearnedFirstUse,
+) {
+    if learned.len() == 0 {
+        return;
+    }
+    let mut added = 0usize;
+    for (main_format, samples) in view_sig.iter().copied() {
+        for tech in 0..=lighting_iw4::TECHNIQUE_NONE {
+            for (_, prepared_pass) in prepared_table.passes_for_tech(super::super::TechType(tech)) {
+                let state = super::super::state::GfxPassState::from_prepared(prepared_pass.state);
+                let state0 = state.apply_change_state_0_host(AlphaMode::Opaque, false);
+                let state1 = state.apply_change_state_1_host();
+                let target = exact_colour_target_format(main_format, state0.srgb_write);
+                for port in prepared_pass.port.iter().flatten() {
+                    if pipeline.get(*port).is_none() {
+                        continue;
+                    }
+                    let packed = port.vertex_type == asset_iw4::vertex_decl::PACKED_VERTEX_TYPE;
+                    for mark_mesh in [false, true] {
+                        if mark_mesh && !packed {
+                            continue;
+                        }
+                        let key = ExactColourPipelineKey {
+                            target,
+                            depth_format: SCENE_DEPTH_FORMAT,
+                            samples,
+                            state0,
+                            state1,
+                            port: *port,
+                            cached_lighting: false,
+                            mark_mesh,
+                            forward_z: false,
+                        };
+                        if learned.contains(super::super::prewarm::key_hash(&key))
+                            && scheduled.insert(key)
+                        {
+                            current.push(request_exact_pipeline(registry, pipeline, device, key));
+                            added += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if added > 0 {
+        diag::info!(
+            World,
+            "prewarm: {added} pipelines first made during play in earlier runs join the working set ({} remembered)",
+            learned.len()
+        );
     }
 }
