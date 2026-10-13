@@ -328,7 +328,9 @@ fn hostile(world: &mut World, turret: &Turret, target: u64) -> bool {
         return false;
     }
     let team = |world: &mut World, object: u64| match super::players::entity_field(
-        world, object, "team",
+        world,
+        object,
+        "sessionteam",
     ) {
         Value::String(team) => Some(Arc::<str>::from(team)),
         _ => None,
@@ -338,7 +340,7 @@ fn hostile(world: &mut World, turret: &Turret, target: u64) -> bool {
         .clone()
         .or_else(|| turret.owner.and_then(|o| team(world, o)));
     match own.as_deref() {
-        None | Some("free") => true,
+        None | Some("none" | "free") => true,
         Some(own) => team(world, target).as_deref() != Some(own),
     }
 }
