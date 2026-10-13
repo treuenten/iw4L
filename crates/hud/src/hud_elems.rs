@@ -25,6 +25,9 @@ use crate::images::HudImages;
 
 const WAYPOINT_ICON_SIZE: f32 = 24.0;
 const WAYPOINT_OFFSCREEN_PAD: f32 = 24.0;
+const WAYPOINT_PLAYER_OFFSET_STAND: f32 = 74.0;
+const WAYPOINT_PLAYER_OFFSET_CROUCH: f32 = 56.0;
+const WAYPOINT_PLAYER_OFFSET_PRONE: f32 = 30.0;
 
 const HUDELEM_FLAG_FOREGROUND: i32 = 0x1;
 const HUDELEM_FLAG_HIDEWHENDEAD: i32 = 0x2;
@@ -156,6 +159,7 @@ fn place_waypoint(
     camera: (&Camera, &GlobalTransform),
     entities: &Query<(&CEntity, &CEntityRuntime)>,
     surface: &crate::surface::Hud2dSurface,
+    eyes: i32,
 ) -> Option<(Vec2, f32)> {
     let offset = Vec3::new(elem.x, elem.y, elem.z);
     let world = if elem.target_ent_num == playerstate_iw4::ENTITYNUM_NONE {
@@ -164,7 +168,20 @@ fn place_waypoint(
         let (_, runtime) = entities.iter().find(|(entity, runtime)| {
             i32::from(entity.number()) == elem.target_ent_num && runtime.in_next_snap()
         })?;
-        Vec3::from_array(runtime.origin) + offset
+        if elem.target_ent_num == eyes {
+            return None;
+        }
+        let origin = Vec3::from_array(runtime.origin);
+        let state = &runtime.next_state;
+        if state.e_type != entity_iw4::ET_PLAYER {
+            origin + offset
+        } else if state.e_flags & playerstate_iw4::eflags::PRONE != 0 {
+            origin + Vec3::Z * WAYPOINT_PLAYER_OFFSET_PRONE
+        } else if state.e_flags & playerstate_iw4::eflags::DUCK != 0 {
+            origin + Vec3::Z * WAYPOINT_PLAYER_OFFSET_CROUCH
+        } else {
+            origin + Vec3::Z * WAYPOINT_PLAYER_OFFSET_STAND
+        }
     };
     let (camera, transform) = camera;
     let eye = transform.translation();
@@ -226,6 +243,7 @@ pub(crate) fn update_hud_elems(
     mut ui_sound: MessageWriter<UiPlaySound>,
     cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     entities: Query<(&CEntity, &CEntityRuntime)>,
+    view: Option<Res<frame::ViewSubject>>,
 ) {
     if !surface.is_ready() {
         hide(&mut pass);
@@ -266,6 +284,12 @@ pub(crate) fn update_hud_elems(
     };
 
     let cg_time = cg_clock.time();
+    let eyes = match view.as_deref() {
+        Some(frame::ViewSubject::Seat {
+            focus: Some(focus), ..
+        }) => i32::try_from(*focus).unwrap_or(-1),
+        _ => i32::try_from(local.0.0).unwrap_or(-1),
+    };
     let mut layers: [Vec<Draw2dCmd>; 2] = Default::default();
     let mut fonts = HashMap::new();
     for (index, elem) in elems.iter().enumerate() {
@@ -309,7 +333,8 @@ pub(crate) fn update_hud_elems(
                 let Some(camera) = cameras.iter().find(|(c, _)| c.is_active) else {
                     continue;
                 };
-                let Some((at, size)) = place_waypoint(elem, camera, &entities, &surface) else {
+                let Some((at, size)) = place_waypoint(elem, camera, &entities, &surface, eyes)
+                else {
                     continue;
                 };
                 hud_iw4::HudElemPlacement {
