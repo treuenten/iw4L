@@ -16,7 +16,6 @@ use crate::lighting_box_half;
 use crate::{
     RemoteBodyDrawPlan, append_remote_body_cpu_blob, finish_remote_body_draw_plan,
     install_body_packed_session, push_remote_body_cpu_draw, take_body_packed_session,
-    topology_fingerprint,
 };
 use anim_iw4::{PLAYER_ANIM_RAW_MASK, PlayerAnimValue};
 use asset_model::ModelSkel;
@@ -1625,7 +1624,10 @@ fn submit_remote_bodies(
     if submitted_verts > 0 && !any_missing_material {
         plan.revisions.bump_surfaces();
         plan.revisions.bump_draws();
-        let topology = topology_fingerprint(&plan.indices, &plan.surface_ranges, plan.decoded_n);
+        let body = &mut *plan;
+        let topology =
+            body.topology_memo
+                .fingerprint(&body.indices, &body.surface_ranges, body.decoded_n);
         if plan.revisions.topology != topology {
             plan.revisions.topology = topology;
         }

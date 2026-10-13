@@ -16,13 +16,46 @@ pub struct SourceRevisions {
     pub admission: u64,
 }
 
+fn topology_hash(indices: &[u32], ranges: &[(u32, u32)], decoded_n: usize) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    decoded_n.hash(&mut hasher);
+    indices.hash(&mut hasher);
+    ranges.hash(&mut hasher);
+    hasher.finish()
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct TopologyMemo {
+    indices: Vec<u32>,
+    ranges: Vec<(u32, u32)>,
+    decoded_n: usize,
+    topology: Option<u64>,
+}
+
+impl TopologyMemo {
+    pub fn fingerprint(&mut self, indices: &[u32], ranges: &[(u32, u32)], decoded_n: usize) -> u64 {
+        if let Some(topology) = self.topology
+            && self.decoded_n == decoded_n
+            && self.ranges.as_slice() == ranges
+            && self.indices.as_slice() == indices
+        {
+            debug_assert_eq!(topology, topology_hash(indices, ranges, decoded_n));
+            return topology;
+        }
+        let topology = topology_hash(indices, ranges, decoded_n);
+        self.indices.clear();
+        self.indices.extend_from_slice(indices);
+        self.ranges.clear();
+        self.ranges.extend_from_slice(ranges);
+        self.decoded_n = decoded_n;
+        self.topology = Some(topology);
+        topology
+    }
+}
+
 impl SourceRevisions {
     pub fn set_topology_from(&mut self, indices: &[u32], ranges: &[(u32, u32)], decoded_n: usize) {
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        decoded_n.hash(&mut hasher);
-        indices.hash(&mut hasher);
-        ranges.hash(&mut hasher);
-        self.topology = hasher.finish();
+        self.topology = topology_hash(indices, ranges, decoded_n);
     }
 
     pub fn bump_vertices(&mut self) {

@@ -62,6 +62,8 @@ pub struct RemoteBodyDrawPlan {
 
     pub last_packed_id: Option<u64>,
     pub last_draw_id: Option<u64>,
+
+    pub(crate) topology_memo: render_frame::TopologyMemo,
 }
 
 impl RemoteBodyDrawPlan {
@@ -181,6 +183,8 @@ pub struct ItemDrawPlan {
     pub generation: u64,
     pub revisions: SourceRevisions,
     pub(crate) packed_vertices: asset_world::PackedVertexPayload,
+
+    pub(crate) topology_memo: render_frame::TopologyMemo,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -210,6 +214,8 @@ pub struct DynEntDrawPlan {
     pub generation: u64,
     pub revisions: SourceRevisions,
     pub(crate) packed_vertices: asset_world::PackedVertexPayload,
+
+    pub(crate) topology_memo: render_frame::TopologyMemo,
 }
 
 impl DynEntDrawPlan {

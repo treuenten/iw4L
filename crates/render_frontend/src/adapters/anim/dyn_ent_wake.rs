@@ -5,7 +5,7 @@ use std::time::Instant;
 use bevy::prelude::*;
 use entity_iw4::EntityEventKind;
 
-use crate::adapters::anim::dyn_ent::xmodel_radius;
+use crate::adapters::anim::dyn_ent::{DynEntModelHandles, xmodel_radius};
 use crate::adapters::anim::dyn_ent_phys::{DynEntPhysImpulse, DynEntPhysWorld};
 use crate::adapters::fx::present::{FxElemInfoCache, play_named_oriented_in_world};
 use crate::adapters::fx::world_mark::FrontendFxScene;
@@ -185,11 +185,17 @@ pub(crate) fn rebuild_dyn_ent_wake_broadphase(
     catalog: Option<Res<asset_world::MapXModelSceneCatalog>>,
     instances: Query<(Entity, &WorldDynEntInstance, &Transform), With<DynEntModelEntity>>,
     mut broadphase: ResMut<DynEntWakeBroadphase>,
+    mut handles: Local<DynEntModelHandles>,
 ) {
+    handles.sync(catalog.as_ref());
     let catalog = catalog.as_deref();
     broadphase.rebuild(instances.iter().map(|(entity, inst, transform)| {
         let radius = can_wake(inst)
-            .map(|_| xmodel_radius(catalog, &inst.current_model).max(1.0))
+            .map(|_| {
+                handles
+                    .radius(catalog, inst.index, &inst.current_model)
+                    .max(1.0)
+            })
             .unwrap_or(0.0);
         DynEntWakeEntry {
             entity,
@@ -850,6 +856,7 @@ pub(crate) fn wake_player_overlap(
     catalog: Option<Res<asset_world::MapXModelSceneCatalog>>,
     instances: Query<(Entity, &WorldDynEntInstance, &Transform), With<DynEntModelEntity>>,
     mut impulses: MessageWriter<DynEntPhysImpulse>,
+    mut handles: Local<DynEntModelHandles>,
 ) {
     let Some(ps) = prediction.as_ref().and_then(|p| p.0.predicted_local()) else {
         return;
@@ -861,6 +868,7 @@ pub(crate) fn wake_player_overlap(
     let origin = Vec3::from_array(ps.origin);
     let mins = origin + PLAYER_MINS;
     let maxs = origin + PLAYER_MAXS;
+    handles.sync(catalog.as_ref());
     let catalog = catalog.as_deref();
     for (entity, inst, transform) in &instances {
         if inst.ty != asset_world::DynEntType::Clutter || world.is_awake(entity) {
@@ -869,7 +877,9 @@ pub(crate) fn wake_player_overlap(
         let Some(preset) = can_wake(inst) else {
             continue;
         };
-        let radius = xmodel_radius(catalog, &inst.current_model).max(1.0);
+        let radius = handles
+            .radius(catalog, inst.index, &inst.current_model)
+            .max(1.0);
         if !aabb_sphere_overlap(mins, maxs, transform.translation, radius) {
             continue;
         }
