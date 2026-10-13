@@ -287,6 +287,9 @@ fn boot_bots(
         }
         let index = default_class_index(seed, bot.id, bot.class_picks);
         let join_id = request_ids.allocate();
+        // The sim applies a client's actions in request-id order, and the team
+        // must be seated before the class pick spawns the bot.
+        let team_request = team.map(|team| (team, request_ids.allocate()));
         let class_request = request_ids.allocate();
         let name_request = request_ids.allocate();
         let queued = [
@@ -296,8 +299,7 @@ fn boot_bots(
                     request_id: join_id,
                 },
             ),
-            team.map_or(Ok(()), |team| {
-                let request_id = request_ids.allocate();
+            team_request.map_or(Ok(()), |(team, request_id)| {
                 match (
                     sim::menu_response_field(sim::TEAM_MENU),
                     sim::menu_response_field(team),

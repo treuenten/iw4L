@@ -962,6 +962,7 @@ fn apply_action(
         } => {
             let menu = crate::menu_response_text(&menu);
             let response = crate::menu_response_text(&response);
+            crate::script::seat_team_answer(world.ecs(), id.0, menu, response);
             crate::script::note_team_answer(world.ecs(), id.0, menu);
             if let Some(outcome) = answer_custom_class(world, id, menu, response) {
                 return outcome;

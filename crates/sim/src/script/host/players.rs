@@ -359,6 +359,28 @@ pub(crate) fn note_team_answer(world: &mut World, client: u32, menu: &str) {
     }
 }
 
+pub(crate) fn seat_team_answer(world: &mut World, client: u32, menu: &str, response: &str) {
+    if menu != TEAM_MENU {
+        return;
+    }
+    let team = match response {
+        "axis" => entity_iw4::TEAM_AXIS,
+        "allies" => entity_iw4::TEAM_ALLIES,
+        _ => return,
+    };
+    let begun = world
+        .resource::<RoundScript>()
+        .players
+        .get(&client)
+        .is_some_and(|slot| slot.begun);
+    let mut frame = FrameWorld::from_world(world);
+    let id = ClientId(client);
+    if begun || !frame.bootstrap_ref().kind.is_team() || frame.client_meta(id).is_none() {
+        return;
+    }
+    frame.client_meta_mut(id).client_state_team = team;
+}
+
 fn push_answer(world: &mut World, client: u32, answer: MenuAnswer) {
     world
         .resource_mut::<RoundScript>()
