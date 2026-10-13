@@ -129,7 +129,7 @@ fn aligned_backing_span(start: usize, end: usize, backing_len: usize) -> Option<
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct PlacedPackKey {
+pub(super) struct PlacedPackKey {
     port: PortId,
     local: usize,
     slots: usize,
@@ -410,6 +410,15 @@ pub(super) struct ArenaPack {
     pack_scratch: Vec<u8>,
     placed_dirty_scratch: Vec<(usize, usize)>,
     full_upload: bool,
+
+    log_spans: bool,
+    span_log: Vec<ArenaSpanRef>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ArenaSpanRef {
+    Identity((usize, usize)),
+    Placed(PlacedPackKey),
 }
 
 impl ArenaPack {
@@ -506,6 +515,9 @@ impl ArenaPack {
             Arc::as_ptr(constants) as usize,
             Arc::as_ptr(slots).cast::<u32>() as usize,
         );
+        if self.log_spans {
+            self.span_log.push(ArenaSpanRef::Identity(key));
+        }
         if let Some((base, _, _, stamp)) = self.seen.get_mut(&key) {
             *stamp = self.stamp;
             self.share_n = self.share_n.saturating_add(1);
@@ -535,6 +547,32 @@ impl ArenaPack {
         base
     }
 
+    pub(super) fn set_span_log(&mut self, on: bool) {
+        self.log_spans = on;
+        self.span_log.clear();
+    }
+
+    pub(super) fn span_log(&self) -> &[ArenaSpanRef] {
+        &self.span_log
+    }
+
+    pub(super) fn touch(&mut self, span: ArenaSpanRef) -> Option<u32> {
+        let base = match span {
+            ArenaSpanRef::Identity(key) => {
+                let (base, _, _, stamp) = self.seen.get_mut(&key)?;
+                *stamp = self.stamp;
+                *base
+            }
+            ArenaSpanRef::Placed(key) => {
+                let entry = self.placed_seen.get_mut(&key)?;
+                entry.stamp = self.stamp;
+                mark_placed_base(entry.base)
+            }
+        };
+        self.share_n = self.share_n.saturating_add(1);
+        Some(base)
+    }
+
     pub(super) fn append_hit(
         &mut self,
         port: &crate::drawsurf::AdmittedExactPort,
@@ -555,6 +593,9 @@ impl ArenaPack {
         let Some(banks) = executable.local_banks else {
             return Err(ConstantPackRefusal::MissingLocalBanks);
         };
+        if self.log_spans {
+            self.span_log.push(ArenaSpanRef::Placed(key));
+        }
         self.placed_dirty_scratch.clear();
         let (base, hit) = intern_placed_span(
             &mut self.placed_seen,

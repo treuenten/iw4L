@@ -11,6 +11,7 @@ pub(super) struct ExactColourBindingCache {
     pub(super) generation: MaterialGenerationId,
     views_revision: u64,
     pub(super) textures: ColourBindingLanes,
+    clears: u64,
 }
 
 #[derive(Resource, Default)]
@@ -36,6 +37,11 @@ impl ExactColourBindingCache {
         for slots in &mut self.textures {
             slots.clear();
         }
+        self.clears = self.clears.wrapping_add(1);
+    }
+
+    pub(super) fn clears(&self) -> u64 {
+        self.clears
     }
 
     pub(super) fn interned_n(&self) -> usize {

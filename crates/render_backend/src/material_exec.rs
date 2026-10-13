@@ -101,7 +101,7 @@ fn execution_smodel_packed(packed: u64) -> u64 {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct ExecutionShareKey {
+pub struct ExecutionShareKey {
     gpu_packed: u64,
 
     material_rank: u32,
@@ -145,7 +145,7 @@ enum ExecutionShareExtra {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct OverlayKeepKey {
+pub struct OverlayKeepKey {
     scene_light: u8,
     extra: OverlayKeepExtra,
 }
@@ -166,6 +166,12 @@ enum OverlayKeepExtra {
 enum OverlayMode {
     Full,
     ObjOnly,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct DrawRunKeys {
+    pub share: ExecutionShareKey,
+    pub overlay: OverlayKeepKey,
 }
 
 pub fn draw_material_key(draw: &RetainedDrawItem) -> MaterialDrawKey {
@@ -729,6 +735,27 @@ impl MaterialRunExecutor {
 
     pub fn run_serial(&self) -> u64 {
         self.run_serial
+    }
+
+    pub fn run_keys(
+        frame: &MaterialExecFrame,
+        draw: &RetainedDrawItem,
+        tech_type: TechType,
+        vertex_type: u8,
+    ) -> DrawRunKeys {
+        DrawRunKeys {
+            share: execution_share_key(frame, draw, tech_type, vertex_type),
+            overlay: overlay_keep_key(frame, draw),
+        }
+    }
+
+    pub fn chain(&self) -> (Option<ExecutionShareKey>, Option<OverlayKeepKey>) {
+        (self.run.as_ref().map(|run| run.share), self.last_overlay)
+    }
+
+    pub fn break_chain(&mut self) {
+        self.run = None;
+        self.last_overlay = None;
     }
 
     pub fn census(&self) -> MaterialRunCensus {

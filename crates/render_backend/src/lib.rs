@@ -29,7 +29,8 @@ pub use spot::*;
 pub use tess::*;
 
 pub use material_exec::{
-    MaterialExecView, MaterialRunCensus, MaterialRunExecutor, PlaceLanes, draw_vertex_type,
+    DrawRunKeys, ExecutionShareKey, MaterialExecView, MaterialRunCensus, MaterialRunExecutor,
+    OverlayKeepKey, PlaceLanes, draw_vertex_type,
 };
 pub use overlay::OverlayCodeNeed;
 pub use pack::{

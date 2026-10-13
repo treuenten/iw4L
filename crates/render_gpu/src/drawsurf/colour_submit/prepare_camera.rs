@@ -5,6 +5,7 @@ use bevy::tasks::{ComputeTaskPool, TaskPool};
 use dpvs_iw4::GfxDrawSurf;
 use render_backend::MaterialRunCensus;
 
+use super::reuse::{self, Lookup};
 use super::shadow_prepare::{ShadowLane, open_shadow_table_epoch, prepare_shadow_passes};
 use super::{
     BTreeMap, COLOUR_PREPARE_LANES, Camera3d, CameraPrepareState, CameraWorldPretess,
@@ -364,6 +365,46 @@ pub(super) fn prepare_camera_colour(lane: CameraLane<'_>) {
         census.frame.submit_gather_ms = colour_census_ms(gather_started);
     }
     let prepare_started = colour_census_clock(census_on);
+    let reuse_key = if reuse::enabled() {
+        exec_tables(extracted).map(|(catalog, prepared_table)| reuse::ReuseFrameKey {
+            scene_epoch: scratch.prepared_scene_epoch,
+            binding_clears: binding_cache.clears(),
+            material_generation: extracted.world.generation,
+            catalog: std::ptr::from_ref(catalog) as usize,
+            prepared_table: std::ptr::from_ref(prepared_table) as usize,
+            pipeline_generation: pipeline.generation,
+            pipeline_ports: pipeline.ports.len(),
+            registry_world: registry.world(),
+            geometry_generation: geometry.generation,
+            world_generation: geometry.world_generation,
+            smodel_index_count: geometry.smodel_index_count,
+            world_ready: geometry.world_ready(),
+            smodel_ready: geometry.smodel_ready(),
+            world_vertex_refused: extracted
+                .world
+                .static_geometry
+                .world_vertex_refusal
+                .is_some(),
+            smodel_vertex_refused: extracted
+                .world
+                .static_geometry
+                .smodel_vertex_refusal
+                .is_some(),
+            sun_shadow_view_ready,
+            target: target.main_texture_format(),
+            samples,
+        })
+    } else {
+        None
+    };
+    let smc = reuse::SmcLayoutKey {
+        revision: extracted.world.smodel_index_layout_revision,
+        pretess_indices: extracted.world.smodel_pretess_indices.len(),
+        baked: std::sync::Arc::as_ptr(&extracted.world.smc_index_baked) as usize,
+    };
+    scratch
+        .reuse
+        .open(reuse_key, smc, &extracted.frame.exec_frame);
     let exec_frame = &extracted.frame.exec_frame;
     let exec_view = exec_tables(extracted)
         .map(|(catalog, prepared)| MaterialExecView::camera(catalog, prepared, exec_frame));
@@ -400,6 +441,8 @@ pub(super) fn prepare_camera_colour(lane: CameraLane<'_>) {
         glass_cull: view_cull_planes(exec_frame.clip_from_world),
         census_on,
         sun_shadow_view_ready,
+        reuse: &scratch.reuse.frame,
+        binding_clears: binding_cache.clears(),
     };
     let rows = pack_plan.row_plan.as_slice();
     let share = rows.len().div_ceil(COLOUR_PREPARE_LANES).max(1);
@@ -416,14 +459,23 @@ pub(super) fn prepare_camera_colour(lane: CameraLane<'_>) {
             let input = &input;
             let rows = lane_rows(rows, share, index);
             scope.spawn(async move {
-                *tally = Some(prepare_camera_rows(input, rows, lane, gpu, index as u8));
+                *tally = Some(prepare_camera_lane(input, rows, lane, gpu, index as u8));
             });
         }
         if let Some((index, ((lane, gpu), tally))) = first {
             let rows = lane_rows(rows, share, index);
-            *tally = Some(prepare_camera_rows(&input, rows, lane, gpu, index as u8));
+            *tally = Some(prepare_camera_lane(&input, rows, lane, gpu, index as u8));
         }
     });
+    if scratch.reuse.frame.on {
+        for lane in &scratch.lanes {
+            scratch.reuse.stats.absorb(&lane.reuse.tally);
+        }
+        scratch
+            .reuse
+            .stats
+            .maybe_log(scratch.reuse.frame.changed.indices());
+    }
     let textures = textures
         .into_inner()
         .expect("scene texture tables are never poisoned");
@@ -885,6 +937,8 @@ struct CameraRowsInput<'a> {
     glass_cull: Option<[Vec4; 5]>,
     census_on: bool,
     sun_shadow_view_ready: bool,
+    reuse: &'a reuse::ReuseFrame,
+    binding_clears: u64,
 }
 
 fn lane_rows(rows: &[ColourRowPlan], share: usize, index: usize) -> &[ColourRowPlan] {
@@ -1065,12 +1119,85 @@ fn add_run_census(a: MaterialRunCensus, b: MaterialRunCensus) -> MaterialRunCens
     }
 }
 
-fn prepare_camera_rows(
+fn prepare_camera_lane(
     input: &CameraRowsInput<'_>,
     rows: &[ColourRowPlan],
     lane: &mut ColourPrepareLane,
     gpu_arena: &mut GpuConstantArena,
     lane_index: u8,
+) -> CameraRowTally {
+    if input.reuse.on {
+        lane.reuse.begin(rows.len());
+    }
+    let mut tally = prepare_camera_rows(input, rows, lane);
+    if input.reuse.on {
+        lane.reuse.finish();
+    }
+    upload_lane_arena(input, lane, gpu_arena, lane_index, &mut tally);
+    tally
+}
+
+fn upload_lane_arena(
+    input: &CameraRowsInput<'_>,
+    lane: &mut ColourPrepareLane,
+    gpu_arena: &mut GpuConstantArena,
+    lane_index: u8,
+    tally: &mut CameraRowTally,
+) {
+    let mut prepared = std::mem::take(&mut lane.prepared);
+    let mut pending_viewmodel_prepared = std::mem::take(&mut lane.pending_viewmodel_prepared);
+    if !prepared.is_empty() || !pending_viewmodel_prepared.is_empty() {
+        let arena_started = std::time::Instant::now();
+        let split = prepared.len();
+        prepared.append(&mut pending_viewmodel_prepared);
+        (tally.arena_share, tally.arena_vertex_n, tally.arena_pixel_n) = upload_constant_arena(
+            &mut prepared,
+            &mut lane.arena_pack,
+            gpu_arena,
+            input.pipeline,
+            input.registry,
+            input.device,
+            input.queue,
+            "iw4_exact_vs_constant_arena",
+        );
+        pending_viewmodel_prepared.extend(prepared.drain(split..));
+        tally.arena_ms = arena_started.elapsed().as_secs_f32() * 1000.0;
+    }
+    for draw in prepared
+        .iter_mut()
+        .chain(pending_viewmodel_prepared.iter_mut())
+    {
+        draw.arena_lane = lane_index;
+    }
+    lane.prepared = prepared;
+    lane.pending_viewmodel_prepared = pending_viewmodel_prepared;
+}
+
+fn replay_row(
+    executor: &mut MaterialRunExecutor,
+    view: MaterialExecView<'_>,
+    planned: &ColourRowPlan,
+    (colour, light, emissive): (&FrameProduct, &FrameProduct, &FrameProduct),
+) {
+    let Some(live) = colour_draw_at(colour, light, emissive, planned.draw_index as usize) else {
+        return;
+    };
+    let tech = colour_tech_at(colour, light, emissive, planned.draw_index as usize)
+        .unwrap_or(planned.technique);
+    let expanded = PreparedColourRow {
+        item: live,
+        world_surf: planned.world_surface_override,
+    }
+    .expanded_item();
+    let item = expanded.as_ref().unwrap_or(live);
+    let vertex_type = MaterialRunExecutor::vertex_type(view, item, tech);
+    let _ = executor.execute(view, item, tech, vertex_type, true);
+}
+
+fn prepare_camera_rows(
+    input: &CameraRowsInput<'_>,
+    rows: &[ColourRowPlan],
+    lane: &mut ColourPrepareLane,
 ) -> CameraRowTally {
     let CameraRowsInput {
         extracted,
@@ -1083,7 +1210,6 @@ fn prepare_camera_rows(
         pipeline,
         registry,
         device,
-        queue,
         uploaded,
         sampler_table,
         textures,
@@ -1093,7 +1219,13 @@ fn prepare_camera_rows(
         glass_cull,
         census_on,
         sun_shadow_view_ready,
+        reuse: reuse_frame,
+        binding_clears,
+        ..
     } = *input;
+    let reusing = reuse_frame.on;
+    let lookups = reusing && reuse_frame.valid;
+    let storing = reusing && reuse_frame.store;
     let mut ready_draws = 0u32;
     let mut refused_draws = 0u32;
     let mut pipeline_not_ready = 0u32;
@@ -1135,9 +1267,20 @@ fn prepare_camera_rows(
     pending_viewmodel_keys.clear();
     world_exec_ready_keys.clear();
     lane.arena_pack.begin_list();
+    lane.arena_pack.set_span_log(storing);
     let mut executor = std::mem::take(&mut lane.executor);
     executor.begin_list();
     let run_pack = std::mem::take(&mut lane.run_pack);
+    let lane_reuse = &mut lane.reuse;
+    let textures = if reusing {
+        lane.bind_memo.open(binding_clears);
+        PrepareTextureTables::SceneMemo {
+            shared: textures,
+            memo: &mut lane.bind_memo,
+        }
+    } else {
+        PrepareTextureTables::SceneShared(textures)
+    };
     let mut exact_prepare = ExactPrepare {
         extracted,
         geometry,
@@ -1148,7 +1291,7 @@ fn prepare_camera_rows(
         uploaded,
         spot_shadow_select: None,
         sampler_table,
-        textures: PrepareTextureTables::SceneShared(textures),
+        textures,
         arena: Some(&mut lane.arena_pack),
         run_pack,
         cost: PrepareCost::default(),
@@ -1156,7 +1299,11 @@ fn prepare_camera_rows(
         skinned_shared: Some(skinned),
     };
     exact_prepare.run_pack.begin_pack_intern_frame();
-    for planned in rows {
+    let mut chain = executor.chain();
+    let mut replay = std::mem::take(&mut lane.replay);
+    replay.clear();
+    let mut replay_breaks = false;
+    for (offset, planned) in rows.iter().enumerate() {
         let Some(live) = colour_draw_at(colour, light, emissive, planned.draw_index as usize)
         else {
             continue;
@@ -1170,6 +1317,55 @@ fn prepare_camera_rows(
         }
         let tech = colour_tech_at(colour, light, emissive, planned.draw_index as usize)
             .unwrap_or(planned.technique);
+        let row_id = if lookups || storing {
+            reuse::RowId::of(planned, live, tech)
+        } else {
+            None
+        };
+        if lookups && let Some(id) = row_id {
+            match lane_reuse.lookup(id, planned, live, tech, reuse_frame) {
+                Lookup::Kept(kept) => {
+                    let arena = exact_prepare
+                        .arena
+                        .as_deref_mut()
+                        .expect("colour lanes pack into an arena");
+                    let alive = kept
+                        .spans
+                        .iter()
+                        .zip(kept.records)
+                        .all(|(span, record)| arena.touch(*span) == record.constant_base);
+                    if alive {
+                        prepared.extend_from_slice(kept.records);
+                        if matches!(live.kind, RetainedDrawKind::World { .. }) {
+                            world_exec_ready_keys.push(live.key);
+                        }
+                        ready_draws = ready_draws.saturating_add(1);
+                        prepared_hits = prepared_hits.saturating_add(1);
+                        submitted_keys.push(live.key);
+                        // The executor carries a run and its overlay into the
+                        // next draw. A kept row that would have started a run
+                        // is executed just before the next prepared row, so
+                        // that row sees the same chain as without reuse.
+                        let keys = kept.run_keys;
+                        if chain.0 != Some(keys.share) {
+                            if chain.1 != Some(keys.overlay) {
+                                replay.clear();
+                                replay_breaks = true;
+                            }
+                            replay.push(offset);
+                            chain = (Some(keys.share), Some(keys.overlay));
+                        }
+                        lane_reuse.keep(id);
+                        continue;
+                    }
+                    lane_reuse.tally.miss_span += 1;
+                }
+                Lookup::Changed => lane_reuse.tally.miss_row += 1,
+                Lookup::Reads => lane_reuse.tally.miss_reads += 1,
+                Lookup::Light => lane_reuse.tally.miss_light += 1,
+                Lookup::None => {}
+            }
+        }
         let row = PreparedColourRow {
             item: live,
             world_surf: planned.world_surface_override,
@@ -1208,16 +1404,39 @@ fn prepare_camera_rows(
             last_glass_probe_sampler =
                 Some(u32::from(item.surface_samplers.reflection_probe.is_some()));
         }
-        let executed = exec_view.map_or(
-            Err(MaterialRefusal::StaleMaterialGeneration {
+        let mut run_keys = None;
+        let executed = match exec_view {
+            None => Err(MaterialRefusal::StaleMaterialGeneration {
                 retained: colour.generation_id,
                 current: extracted.world.generation,
             }),
-            |view| {
+            Some(view) => {
+                if !replay.is_empty() {
+                    if replay_breaks {
+                        executor.break_chain();
+                    }
+                    for &at in &replay {
+                        replay_row(&mut executor, view, &rows[at], (colour, light, emissive));
+                    }
+                    replay.clear();
+                    replay_breaks = false;
+                }
                 let vertex_type = MaterialRunExecutor::vertex_type(view, item, tech);
-                executor.execute(view, item, tech, vertex_type, true)
-            },
-        );
+                if storing && row_id.is_some() {
+                    run_keys = Some(MaterialRunExecutor::run_keys(
+                        view.frame,
+                        item,
+                        tech,
+                        vertex_type,
+                    ));
+                }
+                let executed = executor.execute(view, item, tech, vertex_type, true);
+                if lookups {
+                    chain = executor.chain();
+                }
+                executed
+            }
+        };
         let execution = match executed {
             Ok(()) => executor.execution(),
             Err(ref cause) => {
@@ -1305,6 +1524,10 @@ fn prepare_camera_rows(
             &mut prepared
         };
         let dest_start = dest.len();
+        let log_start = exact_prepare
+            .arena
+            .as_deref()
+            .map_or(0, |arena| arena.span_log().len());
         match exact_prepare.prepare_ready_hit(
             item,
             execution,
@@ -1381,6 +1604,27 @@ fn prepare_camera_rows(
                 } else {
                     ready_draws = ready_draws.saturating_add(1);
                     submitted_keys.push(item.key);
+                    let spans = exact_prepare
+                        .arena
+                        .as_deref()
+                        .map_or(&[][..], |arena| &arena.span_log()[log_start..]);
+                    if storing
+                        && !binds_spot_shadow
+                        && let (Some(id), Some(keys)) = (row_id, run_keys)
+                    {
+                        lane_reuse.store(
+                            id,
+                            keys,
+                            planned,
+                            live,
+                            tech,
+                            &dest[dest_start..],
+                            spans,
+                            execution
+                                .iter_passes()
+                                .flat_map(|pass| pass.code_constants.iter().map(|lane| lane.index)),
+                        );
+                    }
                 }
             }
             Err(cause) => {
@@ -1442,32 +1686,7 @@ fn prepare_camera_rows(
     drop(exact_prepare);
     let run_census = executor.census();
     lane.executor = executor;
-
-    let mut arena_ms = 0.0f32;
-    let (mut arena_share, mut arena_vertex_n, mut arena_pixel_n) = (0u32, 0usize, 0usize);
-    if !prepared.is_empty() || !pending_viewmodel_prepared.is_empty() {
-        let arena_started = std::time::Instant::now();
-        let split = prepared.len();
-        prepared.append(&mut pending_viewmodel_prepared);
-        (arena_share, arena_vertex_n, arena_pixel_n) = upload_constant_arena(
-            &mut prepared,
-            &mut lane.arena_pack,
-            gpu_arena,
-            pipeline,
-            registry,
-            device,
-            queue,
-            "iw4_exact_vs_constant_arena",
-        );
-        pending_viewmodel_prepared.extend(prepared.drain(split..));
-        arena_ms = arena_started.elapsed().as_secs_f32() * 1000.0;
-    }
-    for draw in prepared
-        .iter_mut()
-        .chain(pending_viewmodel_prepared.iter_mut())
-    {
-        draw.arena_lane = lane_index;
-    }
+    lane.replay = replay;
     lane.prepared = prepared;
     lane.submitted_keys = submitted_keys;
     lane.pending_viewmodel_prepared = pending_viewmodel_prepared;
@@ -1506,10 +1725,10 @@ fn prepare_camera_rows(
         viewmodel_pipeline_gap,
         cost,
         run_census,
-        arena_ms,
-        arena_share,
-        arena_vertex_n,
-        arena_pixel_n,
+        arena_ms: 0.0,
+        arena_share: 0,
+        arena_vertex_n: 0,
+        arena_pixel_n: 0,
     }
 }
 
@@ -1541,6 +1760,10 @@ struct ColourPrepareLane {
     pending_viewmodel_prepared: Vec<PreparedExactDraw>,
     pending_viewmodel_keys: Vec<u64>,
     world_exec_ready_keys: Vec<u64>,
+
+    bind_memo: super::LaneBindMemo,
+    reuse: reuse::LaneReuse,
+    replay: Vec<usize>,
 }
 
 #[derive(Resource, Default)]
@@ -1561,6 +1784,8 @@ pub(super) struct ColourSubmitScratch {
     pub(super) prepared_scene_epoch: TableEpoch,
 
     logged_skinned: Option<(usize, usize)>,
+
+    reuse: reuse::ReuseState,
 }
 
 impl ColourSubmitScratch {

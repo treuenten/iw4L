@@ -116,6 +116,7 @@ mod record;
 pub(super) use diagnostics::ExactColourSubmitCensus;
 use encode::RecordCensus;
 mod residency;
+mod reuse;
 mod skinning;
 mod smodel_skinned;
 
@@ -1732,25 +1733,72 @@ impl ExactPrepare<'_> {
                 .map_err(GpuSubmitRefusal::TextureBind)?;
             texture_slot_words(device, table, &textures)
         };
+        if let PrepareTextureTables::SceneMemo { memo, .. } = &self.textures
+            && let Some(slots) = memo.slots[scene_index].get(&key)
+        {
+            self.cost.tex_bind_hit_n = self.cost.tex_bind_hit_n.saturating_add(1);
+            return Ok(Arc::clone(slots));
+        }
         let mut shared_guard;
-        let (texture_slots, table) = match &mut self.textures {
+        let (texture_slots, table, memo) = match &mut self.textures {
             PrepareTextureTables::SceneShared(shared) => {
                 shared_guard = shared
                     .lock()
                     .expect("scene texture tables are never poisoned");
                 let refs = &mut *shared_guard;
-                (&mut refs.slots[scene_index], &mut refs.tables[scene_index])
+                (
+                    &mut refs.slots[scene_index],
+                    &mut refs.tables[scene_index],
+                    None,
+                )
             }
-            PrepareTextureTables::Shadow { slots, table } => (&mut **slots, &mut **table),
+            PrepareTextureTables::SceneMemo { shared, memo } => {
+                shared_guard = shared
+                    .lock()
+                    .expect("scene texture tables are never poisoned");
+                let refs = &mut *shared_guard;
+                (
+                    &mut refs.slots[scene_index],
+                    &mut refs.tables[scene_index],
+                    Some(&mut memo.slots[scene_index]),
+                )
+            }
+            PrepareTextureTables::Shadow { slots, table } => (&mut **slots, &mut **table, None),
         };
         if let Some(slots) = texture_slots.get(&key) {
             self.cost.tex_bind_hit_n = self.cost.tex_bind_hit_n.saturating_add(1);
+            if let Some(memo) = memo {
+                memo.insert(key, Arc::clone(slots));
+            }
             return Ok(Arc::clone(slots));
         }
         self.cost.tex_bind_miss_n = self.cost.tex_bind_miss_n.saturating_add(1);
         let slots = resolve(table)?;
         texture_slots.insert(key, Arc::clone(&slots));
+        if let Some(memo) = memo {
+            memo.insert(key, Arc::clone(&slots));
+        }
         Ok(slots)
+    }
+}
+
+// A lane's copy of the shared scene texture bindings. It stays correct only
+// while the shared map never replaces an entry and every clear of it bumps
+// `ExactColourBindingCache::clears`.
+#[derive(Default)]
+pub(super) struct LaneBindMemo {
+    clears: Option<u64>,
+    slots: ColourBindingLanes,
+}
+
+impl LaneBindMemo {
+    pub(super) fn open(&mut self, clears: u64) {
+        if self.clears != Some(clears) {
+            self.clears = Some(clears);
+            for slots in &mut self.slots {
+                slots.clear();
+            }
+        }
     }
 }
 
@@ -1788,6 +1836,10 @@ struct SceneTextureState {
 
 enum PrepareTextureTables<'a> {
     SceneShared(&'a std::sync::Mutex<SceneTextureState>),
+    SceneMemo {
+        shared: &'a std::sync::Mutex<SceneTextureState>,
+        memo: &'a mut LaneBindMemo,
+    },
     Shadow {
         slots: &'a mut HashMap<BoundTextureKey, Arc<[u32]>>,
         table: &'a mut ExactTextureTable,
@@ -2489,13 +2541,16 @@ impl ExactPrepare<'_> {
         binds_spot_shadow: bool,
         out: &mut Vec<PreparedExactDraw>,
     ) -> Result<usize, GpuSubmitRefusal> {
-        let after_scene_resolve = matches!(self.textures, PrepareTextureTables::SceneShared(_))
-            && (item.camera_region == Some(asset_iw4::CAMERA_REGION_EMISSIVE)
-                || matches!(item.kind, RetainedDrawKind::CodeMesh { .. })
-                || matches!(item.kind, RetainedDrawKind::Glass { .. })
-                || matches!(item.kind, RetainedDrawKind::MarkMesh { glass: true, .. })
-                || execution_binds_code_texture(execution, CODE_TEXTURE_RESOLVED_POST_SUN)
-                || execution_binds_code_texture(execution, CODE_TEXTURE_FLOATZ));
+        let after_scene_resolve = matches!(
+            self.textures,
+            PrepareTextureTables::SceneShared(_) | PrepareTextureTables::SceneMemo { .. }
+        ) && (item.camera_region
+            == Some(asset_iw4::CAMERA_REGION_EMISSIVE)
+            || matches!(item.kind, RetainedDrawKind::CodeMesh { .. })
+            || matches!(item.kind, RetainedDrawKind::Glass { .. })
+            || matches!(item.kind, RetainedDrawKind::MarkMesh { glass: true, .. })
+            || execution_binds_code_texture(execution, CODE_TEXTURE_RESOLVED_POST_SUN)
+            || execution_binds_code_texture(execution, CODE_TEXTURE_FLOATZ));
         let kind = item.kind;
         let key = item.key;
         let (tess, start, count, vertex_type) = match kind {

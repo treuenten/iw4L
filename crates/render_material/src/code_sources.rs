@@ -246,6 +246,33 @@ impl RuntimeCodeSources {
             .copied()
             .flatten()
     }
+
+    pub fn changed_constants(&self, previous: &Self, out: &mut Vec<u16>) {
+        out.clear();
+        let len = self.constants.len().max(previous.constants.len());
+        for index in 0..len {
+            let now = self
+                .constants
+                .get(index)
+                .and_then(CodeConstantSlot::live_rows);
+            let before = previous
+                .constants
+                .get(index)
+                .and_then(CodeConstantSlot::live_rows);
+            let same = match (now, before) {
+                (None, None) => true,
+                (Some(now), Some(before)) => Arc::ptr_eq(now, before) || now[..] == before[..],
+                _ => false,
+            };
+            if !same {
+                out.push(u16::try_from(index).expect("code constant index fits u16"));
+            }
+        }
+    }
+
+    pub fn same_textures(&self, other: &Self) -> bool {
+        self.textures == other.textures && self.texture_images == other.texture_images
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -253,7 +280,7 @@ pub enum CodeSourceError {
     TextureIndexOverflow,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompiledConstantOverlay {
     generation: crate::MaterialGenerationId,
     rows: Vec<(u16, [u32; 4])>,
