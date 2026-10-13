@@ -15,6 +15,7 @@ pub(crate) struct Mechanics {
     bodies: BTreeMap<u64, Body>,
     slides: BTreeMap<u64, Slide>,
     finished: Vec<(u64, &'static str)>,
+    settled: Vec<u64>,
     fallback_logged: std::collections::BTreeSet<String>,
     limits: Option<MapLimits>,
 }
@@ -51,6 +52,13 @@ pub(crate) struct LaunchSpec {
     pub half: [f32; 3],
     pub phys: xmodel_runtime::ModelPhys,
     pub client: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct BodyTrajectory {
+    pub velocity: [f32; 3],
+    pub angle_rates: [f32; 3],
+    pub falling: bool,
 }
 
 const TICK_S: f32 = crate::MATCH_TICK_MS as f32 / 1000.0;
@@ -146,6 +154,51 @@ impl Mechanics {
 
     fn note_fallback_phys(&mut self, model: &str) -> bool {
         self.fallback_logged.insert(model.to_owned())
+    }
+
+    pub(crate) fn bodies_to_present(&self) -> std::collections::BTreeSet<u64> {
+        self.bodies
+            .iter()
+            .filter(|(_, b)| b.active && matches!(b.motion, BodyMotion::Rigid { .. }))
+            .map(|(object, _)| *object)
+            .chain(self.settled.iter().copied())
+            .collect()
+    }
+
+    pub(crate) fn body_trajectory(&self, object: u64) -> Option<BodyTrajectory> {
+        let body = self.bodies.get(&object)?;
+        let BodyMotion::Rigid { body: rigid, .. } = &body.motion else {
+            return None;
+        };
+        let still = BodyTrajectory {
+            velocity: [0.0; 3],
+            angle_rates: [0.0; 3],
+            falling: false,
+        };
+        if !body.active {
+            return Some(still);
+        }
+        // A pose that stops changing is not sent again, so a rate left on a
+        // resting body would drift on clients for good.
+        let slow = rigid.on_ground && rigid.velocity.length() < super::rigid_body::SLEEP_SPEED;
+        let calm = rigid.on_ground && rigid.spin.length() < super::rigid_body::SLEEP_SPIN;
+        let mut velocity = rigid.velocity;
+        if rigid.on_ground {
+            velocity.z = velocity.z.max(0.0);
+        }
+        Some(BodyTrajectory {
+            velocity: if slow {
+                still.velocity
+            } else {
+                velocity.to_array()
+            },
+            angle_rates: if calm {
+                still.angle_rates
+            } else {
+                angle_rates(rigid)
+            },
+            falling: !rigid.on_ground,
+        })
     }
 
     pub(crate) fn cancel(&mut self, object: u64) {
@@ -269,6 +322,48 @@ fn explosion_impulse(
 
 fn crushes(client: bool, drop: f32) -> bool {
     !client && drop > CRUSH_MIN_DROP
+}
+
+fn angle_rates(body: &RigidBody) -> [f32; 3] {
+    const LOOK_AHEAD_S: f32 = 0.01;
+    const POLE_PITCH: f32 = 80.0;
+    const POLE_STRAY_DEG: f32 = 6.0;
+    if body.spin.length_squared() < 1e-8 {
+        return [0.0; 3];
+    }
+    let turned = |dt: f32| {
+        (glam::Quat::from_axis_angle(body.spin.normalize(), body.spin.length() * dt)
+            * body.rotation)
+            .normalize()
+    };
+    let euler = |rotation: glam::Quat| {
+        let m = glam::Mat3::from_quat(rotation);
+        math_iw4::axis_to_angles([
+            m.x_axis.to_array(),
+            m.y_axis.to_array(),
+            m.z_axis.to_array(),
+        ])
+    };
+    let now = euler(body.rotation);
+    let later = euler(turned(LOOK_AHEAD_S));
+    let near_pole = |angles: [f32; 3]| math_iw4::angle_subtract(angles[0], 0.0).abs() > POLE_PITCH;
+    if near_pole(now) || near_pole(later) {
+        let next = euler(turned(TICK_S));
+        let rates: [f32; 3] =
+            std::array::from_fn(|i| math_iw4::angle_subtract(next[i], now[i]) / TICK_S);
+        let stays = [0.25f32, 0.5, 0.75].into_iter().all(|share| {
+            let t = TICK_S * share;
+            let along = super::rigid_body::rotation_from_axis(math_iw4::angles_to_axis(
+                std::array::from_fn(|i| now[i] + rates[i] * t),
+            ));
+            along.angle_between(turned(t)) < POLE_STRAY_DEG.to_radians()
+        });
+        return if stays { rates } else { [0.0; 3] };
+    }
+    let cap = 2.0 * super::rigid_body::MAX_ANG_SPEED.to_degrees();
+    std::array::from_fn(|i| {
+        (math_iw4::angle_subtract(later[i], now[i]) / LOOK_AHEAD_S).clamp(-cap, cap)
+    })
 }
 
 fn launch_angles(angles: [f32; 3], client: bool) -> [f32; 3] {
@@ -487,8 +582,12 @@ fn advance_bodies(world: &mut World) {
     let mut crushed = Vec::new();
     world.resource_scope::<Mechanics, _>(|world, mut mechanics| {
         let Mechanics {
-            bodies, finished, ..
+            bodies,
+            finished,
+            settled,
+            ..
         } = &mut *mechanics;
+        settled.clear();
         bodies.retain(|object, body| {
             if !world
                 .resource::<RoundScript>()
@@ -505,7 +604,10 @@ fn advance_bodies(world: &mut World) {
                     advance_piece(world, *object, body, finished, &mut crushed)
                 }
                 BodyMotion::Rigid { .. } => {
-                    advance_rigid(world, *object, body, finished, &mut crushed)
+                    advance_rigid(world, *object, body, finished, &mut crushed);
+                    if !body.active {
+                        settled.push(*object);
+                    }
                 }
             }
             true

@@ -221,10 +221,22 @@ fn publish_killcam_cameras(world: &mut World) {
 
 fn present(world: &mut World, now: i32) {
     let retired = std::mem::take(&mut world.resource_mut::<RoundScript>().retired_presence);
-    let wanted = collect_wanted(world);
+    let forced = match world.get_resource::<super::mechanics::Mechanics>() {
+        Some(mechanics) => mechanics.bodies_to_present(),
+        None => std::collections::BTreeSet::new(),
+    };
+    let wanted = collect_wanted(world, &forced);
     if retired.is_empty() && wanted.is_empty() {
         return;
     }
+    let bodies: BTreeMap<u64, super::mechanics::BodyTrajectory> =
+        match world.get_resource::<super::mechanics::Mechanics>() {
+            Some(mechanics) => wanted
+                .iter()
+                .filter_map(|want| Some((want.object, mechanics.body_trajectory(want.object)?)))
+                .collect(),
+            None => BTreeMap::new(),
+        };
     let mut frame = FrameWorld::from_world(world);
     let movers: BTreeMap<ScriptModelId, ScriptMoverGentity> =
         crate::frame::collect_script_movers(frame.ecs())
@@ -277,7 +289,17 @@ fn present(world: &mut World, now: i32) {
             mover.nonsolid = !want.solid;
             mover.shown_to = want.shown_to;
         }
-        if posed || shown.moving {
+        if let Some(body) = bodies.get(&want.object) {
+            if posed || shown.moving || forced.contains(&want.object) {
+                frame.set_script_mover_body_pose(
+                    mover.state.number,
+                    now,
+                    want.origin,
+                    want.angles,
+                    *body,
+                );
+            }
+        } else if posed || shown.moving {
             frame.set_script_mover_pose(mover.state.number, now, want.origin, want.angles);
         }
         let reshaped = want.model != shown.model || want.attachments != shown.attachments;
@@ -392,7 +414,7 @@ fn resolve_link_tags(world: &mut World) {
     }
 }
 
-fn collect_wanted(world: &mut World) -> Vec<Wanted> {
+fn collect_wanted(world: &mut World, forced: &std::collections::BTreeSet<u64>) -> Vec<Wanted> {
     let mut runtime = world.resource_mut::<RoundScript>();
     let ids: Vec<(u64, ScriptModelId, bool, u64, bool)> = runtime
         .entities
@@ -409,7 +431,8 @@ fn collect_wanted(world: &mut World) -> Vec<Wanted> {
         let anim_op = entity.anim_op.take();
         let attachments = entity.attachments.clone();
         let collision_only = matches!(entity.kind, EntityKind::Missile(_));
-        let unchanged = part_ops.is_empty()
+        let unchanged = !forced.contains(&object)
+            && part_ops.is_empty()
             && anim_op.is_none()
             && runtime.shown.get(&object).is_some_and(|shown| {
                 !shown.moving
