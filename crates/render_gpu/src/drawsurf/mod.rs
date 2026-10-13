@@ -13,6 +13,7 @@ mod iw_tess;
 mod model_lighting_tiles;
 mod postfx;
 mod postfx_dof;
+mod prewarm;
 mod products;
 mod resolved_scene;
 pub(crate) mod scene_depth;

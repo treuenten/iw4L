@@ -2947,6 +2947,7 @@ pub(super) fn register(app: &mut App) {
         .init_resource::<SceneTextureTables>()
         .init_resource::<ExactPipelineKickCache>()
         .init_resource::<ExactPipelineRegistry>()
+        .init_resource::<super::prewarm::LearnedFirstUse>()
         .init_resource::<ExactConstantArena>()
         .init_resource::<ExactColourSubmitCensus>()
         .init_resource::<ShadowmapSunGpu>()
