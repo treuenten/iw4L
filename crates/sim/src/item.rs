@@ -31,6 +31,12 @@ pub const ITEM_MAXS: [f32; 3] = [1.0, 1.0, 1.0];
 
 pub const ITEM_USE_HOLD_MS: i32 = 250;
 
+const WEAPON_HINT_BASE: i32 = 4;
+
+pub(crate) fn hints_item(cursor_hint: i32) -> bool {
+    cursor_hint > WEAPON_HINT_BASE
+}
+
 pub const PLAYER_DROP_Z: f32 = (PLAYER_MAXS[2] - PLAYER_MINS[2]) * 0.5;
 
 const SHIELD_DROP_PITCH: f32 = -90.0;
@@ -1031,7 +1037,7 @@ pub(crate) fn phase_use_items(
         if !held || selected.is_none() || selected_ref != meta.item_use_entity {
             meta.item_use_entity = None;
         }
-        if pressed {
+        if pressed && hints_item(ps.cursor_hint) {
             meta.item_use_entity = selected_ref;
             meta.item_use_press_ms = now;
         }
@@ -1063,7 +1069,7 @@ pub(crate) fn phase_use_items(
                 || gsc_give_weapon_is_akimbo(world.weapon_script_name(item.weapon))
         });
         if let Some(ps) = world.player_mut(id) {
-            ps.cursor_hint = selected.map_or(0, |item| item.weapon as i32 + 4);
+            ps.cursor_hint = selected.map_or(0, |item| item.weapon as i32 + WEAPON_HINT_BASE);
             ps.cursor_hint_ent_index = selected.map_or(ENTITYNUM_NONE, |item| item.number);
             ps.cursor_hint_string = -1;
             ps.cursor_hint_dual_wield = i32::from(dual);

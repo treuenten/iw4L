@@ -968,12 +968,19 @@ pub(crate) fn dispatch_triggers(world: &mut World) {
             .filter(|(_, _, held)| *held)
             .map(|(client, _, _)| *client)
             .collect();
+        let mut use_presses = Vec::new();
         for (client, player) in &pressed {
-            if let Some(usable) = runtime.use_selected.get(client)
-                && eligible(&runtime, &frame, *usable, *client, true)
-                && fires(&runtime.entities[usable].classname) != Some(Fires::Use)
+            let item = frame
+                .player(crate::ClientId(*client))
+                .is_some_and(|ps| crate::item::hints_item(ps.cursor_hint));
+            let selected = runtime.use_selected.get(client).copied();
+            if let Some(usable) = selected
+                && eligible(&runtime, &frame, usable, *client, true)
+                && fires(&runtime.entities[&usable].classname) != Some(Fires::Use)
             {
-                raised.push((*usable, *player));
+                raised.push((usable, *player));
+            } else if !item {
+                use_presses.push((*client, *player, selected));
             }
         }
         let triggers: Vec<(u64, Fires)> = runtime
@@ -987,7 +994,11 @@ pub(crate) fn dispatch_triggers(world: &mut World) {
                 continue;
             };
             let candidates: Vec<(u32, u64)> = match kind {
-                Fires::Use => pressed.clone(),
+                Fires::Use => use_presses
+                    .iter()
+                    .filter(|(_, _, selected)| selected.is_none_or(|selected| selected == trigger))
+                    .map(|(client, player, _)| (*client, *player))
+                    .collect(),
                 Fires::Touch | Fires::Once => players
                     .iter()
                     .map(|(client, object, _)| (*client, *object))

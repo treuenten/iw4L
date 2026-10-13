@@ -4,6 +4,7 @@ use crate::script::Namespace::{Function, Method};
 use crate::script::{NativeRegistry, RoundScript, Value};
 use crate::world::ClientId;
 use bevy_ecs::prelude::World;
+use playerstate_iw4::ENTITYNUM_NONE;
 
 const USE_RADIUS: f32 = 128.0;
 const HINTS: [&str; 5] = [
@@ -212,11 +213,20 @@ pub(crate) fn select_usables(world: &mut World) {
             continue;
         };
         selected.insert(client, object);
-        if let Some(ps) = frame.player_mut(id)
-            && ps.cursor_hint == 0
-        {
+        // The item code has already written this tick's weapon hint.
+        let takes_hint = if crate::item::hints_item(ps.cursor_hint) {
+            usable.cursor > 0
+                && usable.hint >= 0
+                && super::triggers::use_trigger_reach(&mut runtime, &frame, object, client, player)
+                    == Some(true)
+        } else {
+            ps.cursor_hint == 0
+        };
+        if takes_hint && let Some(ps) = frame.player_mut(id) {
             ps.cursor_hint = usable.cursor;
             ps.cursor_hint_string = usable.hint;
+            ps.cursor_hint_ent_index = ENTITYNUM_NONE;
+            ps.cursor_hint_dual_wield = 0;
         }
     }
     runtime.use_selected = selected;
