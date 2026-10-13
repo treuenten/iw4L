@@ -393,7 +393,8 @@ fn acquire(world: &mut World, object: u64, turret: &Turret, from: [f32; 3]) -> O
             let frame = FrameWorld::from_world(world);
             frame
                 .player(ClientId(client))
-                .and_then(|ps| (ps.health > 0).then_some(ps.origin))
+                .filter(|ps| ps.health > 0 && ps.perks[0] & playerstate_iw4::PERK_COLDBLOODED == 0)
+                .map(|ps| ps.origin)
         };
         let Some(origin) = alive else { continue };
         if !hostile(world, turret, player) {
