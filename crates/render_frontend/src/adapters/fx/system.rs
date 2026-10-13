@@ -630,7 +630,10 @@ fn commit_fx_transaction(
     mut combat: ResMut<CombatFxDump>,
     mut env: FxPresentEnv,
     lighting_cache: Option<Res<WorldModelLightingCache>>,
-    mut lighting_requests: ResMut<ModelLightingRequests>,
+    (mut lighting_requests, mut mark_binds): (
+        ResMut<ModelLightingRequests>,
+        Local<MarkMaterialBinds>,
+    ),
 ) {
     let FxFrameTransaction {
         outcome,
@@ -655,7 +658,7 @@ fn commit_fx_transaction(
         FxFrameOutcome::Generated(generated) => generated,
         FxFrameOutcome::Unavailable(FxUnavailableCause::CatalogAbsent) => {
             host.0.last_mark_mesh = None;
-            fill_mark_mesh_plan(&mut host.0, None, &mut mark_plan, &runtime);
+            fill_mark_mesh_plan(&mut host.0, None, &mut mark_plan, &runtime, &mut mark_binds);
             publish_empty_fx_owned_plans(&mut plan, &mut spark_plan);
             return;
         }
@@ -674,13 +677,19 @@ fn commit_fx_transaction(
     } = generated;
     let Some(catalog) = catalog else {
         *tracer_world = tracers;
-        fill_mark_mesh_plan(&mut host.0, None, &mut mark_plan, &runtime);
+        fill_mark_mesh_plan(&mut host.0, None, &mut mark_plan, &runtime, &mut mark_binds);
         publish_empty_fx_owned_plans(&mut plan, &mut spark_plan);
         return;
     };
     let mut zero_half = 0u32;
 
-    fill_mark_mesh_plan(&mut host.0, mark_mesh, &mut mark_plan, &runtime);
+    fill_mark_mesh_plan(
+        &mut host.0,
+        mark_mesh,
+        &mut mark_plan,
+        &runtime,
+        &mut mark_binds,
+    );
     let planes = frustum_planes.as_slice();
     fill_fx_model_plan(
         &out.models,
@@ -1828,6 +1837,7 @@ fn fill_mark_mesh_plan(
     mesh: Option<fx::GfxMarkMeshCensus>,
     plan: &mut GfxMarkMeshPlan,
     runtime: &MaterialGeneration,
+    binds: &mut MarkMaterialBinds,
 ) {
     let Some(mesh) = mesh else {
         host.gfx_mark_draw_n = None;
@@ -1856,7 +1866,7 @@ fn fill_mark_mesh_plan(
             skip_why = Some("no_material");
             continue;
         };
-        let Some((sort_key, ordinal)) = mark_mesh_bind(name, runtime) else {
+        let Some((sort_key, ordinal)) = binds.bind(surf.mark_slot, name, runtime) else {
             skip_why = Some("no_ordinal");
             continue;
         };
@@ -1925,6 +1935,42 @@ fn fill_mark_mesh_plan(
     host.last_mark_lmap_none_n = Some(none_n);
     host.last_mark_lmap_page_n = Some(page_n);
     plan.publish_share();
+}
+
+#[derive(Default)]
+pub(crate) struct MarkMaterialBinds {
+    generation: Option<render_material::MaterialGenerationId>,
+    slots: Vec<Option<MarkMaterialBind>>,
+}
+
+struct MarkMaterialBind {
+    name: String,
+    bind: Option<(u8, u32)>,
+}
+
+impl MarkMaterialBinds {
+    fn bind(&mut self, slot: u16, name: &str, runtime: &MaterialGeneration) -> Option<(u8, u32)> {
+        let generation = runtime.catalog.generation_id();
+        if self.generation != Some(generation) {
+            self.generation = Some(generation);
+            self.slots.clear();
+        }
+        let at = usize::from(slot);
+        if self.slots.len() <= at {
+            self.slots.resize_with(at + 1, || None);
+        }
+        match &self.slots[at] {
+            Some(bound) if bound.name == name => bound.bind,
+            _ => {
+                let bind = mark_mesh_bind(name, runtime);
+                self.slots[at] = Some(MarkMaterialBind {
+                    name: name.to_owned(),
+                    bind,
+                });
+                bind
+            }
+        }
+    }
 }
 
 fn mark_mesh_bind(name: &str, runtime: &MaterialGeneration) -> Option<(u8, u32)> {

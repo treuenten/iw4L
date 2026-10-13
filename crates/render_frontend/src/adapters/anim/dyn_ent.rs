@@ -1,7 +1,7 @@
 pub use render_anim::occupancy::dyn_ent::{
-    DynEntBrushPrimaryLightVis, DynEntCellBits, DynEntPrimaryLightVis, ensure_primary_light_words,
-    fpv_frustum_planes, relink_dyn_ent_primary_lights, sphere_behind_frustum, xmodel_phys_hull,
-    xmodel_radius,
+    DynEntBrushPrimaryLightVis, DynEntCellBits, DynEntModelHandles, DynEntPrimaryLightVis,
+    ensure_primary_light_words, fpv_frustum_planes, relink_dyn_ent_primary_lights,
+    sphere_behind_frustum, xmodel_phys_hull, xmodel_radius,
 };
 pub use render_anim::{DynEntPhysClip, DynEntPhysWorld};
 

@@ -11,6 +11,36 @@ pub(crate) struct BarracksMenuState {
     reward_hover: usize,
     rewards: Vec<u32>,
     status: String,
+    published: Option<BarracksInputs>,
+}
+
+#[derive(Debug, PartialEq)]
+struct BarracksInputs {
+    selection: sim::PlayerProfile,
+    player_name: String,
+    catalog: bevy::ecs::change_detection::Tick,
+    loc: bevy::ecs::change_detection::Tick,
+}
+
+impl BarracksInputs {
+    fn matches(
+        &self,
+        selection: sim::PlayerProfile,
+        player_name: &str,
+        catalog: bevy::ecs::change_detection::Tick,
+        loc: bevy::ecs::change_detection::Tick,
+    ) -> bool {
+        self.selection == selection
+            && self.player_name == player_name
+            && self.catalog == catalog
+            && self.loc == loc
+    }
+}
+
+// A console set is applied by the frontend route, which may run before or after
+// this one, so the dvars it could overwrite are written again the next frame.
+pub(crate) fn writes_any_dvar(command: &ConsoleCommand) -> bool {
+    matches!(command.name.as_str(), "set" | "seta" | "setfromdvar")
 }
 
 pub(crate) fn register(registry: &mut ConsoleRegistry) {
@@ -45,13 +75,30 @@ pub(crate) fn route(
 ) {
     if !profile.loaded {
         commands.read().for_each(drop);
+        state.published = None;
+        return;
+    }
+    let commands: Vec<&ConsoleCommand> = commands.read().collect();
+    let dvar_writes = commands.iter().any(|command| writes_any_dvar(command));
+    let barracks: Vec<&ConsoleCommand> = commands
+        .into_iter()
+        .filter(|command| command.name.starts_with("ui_barracks_"))
+        .collect();
+    if barracks.is_empty()
+        && !dvar_writes
+        && state.published.as_ref().is_some_and(|published| {
+            published.matches(
+                profile.selection,
+                &settings.player_name,
+                catalog.last_changed(),
+                loc.last_changed(),
+            )
+        })
+    {
         return;
     }
     let rows = reward_rows(&catalog);
-    for command in commands
-        .read()
-        .filter(|command| command.name.starts_with("ui_barracks_"))
-    {
+    for command in barracks {
         let arg = command.args.first().map(String::as_str).unwrap_or("");
         let index = arg.parse::<usize>().ok();
         let table_name = if state.emblems {
@@ -281,6 +328,12 @@ pub(crate) fn route(
         format!("{} / 3 rewards selected", state.rewards.len()),
     );
     dvars.set("ui_barracks_status", &state.status);
+    state.published = (!dvar_writes).then(|| BarracksInputs {
+        selection: profile.selection,
+        player_name: settings.player_name.clone(),
+        catalog: catalog.last_changed(),
+        loc: loc.last_changed(),
+    });
 }
 
 pub(crate) fn sync_profile(

@@ -14,7 +14,7 @@ use crate::occupancy::dyn_ent_phys;
 use crate::occupancy::script_model::{DObjLodView, pose_script_dobj_with_materials};
 use crate::{
     DynEntDrawPlan, DynEntOwnerDraw, XMODEL_OBJECT_ID_DYNENT_BASE, append_dynent_asset,
-    stamp_plan_geometry, topology_fingerprint,
+    stamp_plan_geometry,
 };
 use anim_iw4::DOBJ_RADIUS_PARENT_ROOT;
 use render_scene::{
@@ -231,6 +231,100 @@ pub fn fpv_frustum_planes(
         planes.truncate(2);
     }
     planes
+}
+
+/// Lookups must use the catalog last passed to `sync`.
+#[derive(Default)]
+pub struct DynEntModelHandles {
+    catalog: Option<bevy::ecs::change_detection::Tick>,
+    slots: Vec<Option<DynEntModelHandle>>,
+}
+
+struct DynEntModelHandle {
+    key: asset_world::MapXModelAssetKey,
+    // Weak, so a catalog that is dropped frees its models.
+    skel: Option<std::sync::Weak<asset_model::ModelSkel>>,
+    radius: f32,
+}
+
+impl DynEntModelHandles {
+    pub fn sync(&mut self, catalog: Option<&Res<asset_world::MapXModelSceneCatalog>>) {
+        let stamp = catalog.map(|catalog| catalog.last_changed());
+        if self.catalog != stamp {
+            self.catalog = stamp;
+            self.slots.clear();
+        }
+    }
+
+    fn handle(
+        &mut self,
+        catalog: &asset_world::MapXModelSceneCatalog,
+        slot: u16,
+        key: &asset_world::MapXModelAssetKey,
+    ) -> (
+        &DynEntModelHandle,
+        Option<std::sync::Arc<asset_model::ModelSkel>>,
+    ) {
+        let slot = usize::from(slot);
+        if self.slots.len() <= slot {
+            self.slots.resize_with(slot + 1, || None);
+        }
+        let held = match &self.slots[slot] {
+            Some(handle) if handle.key == *key => match &handle.skel {
+                None => Some(None),
+                Some(skel) => skel.upgrade().map(Some),
+            },
+            _ => None,
+        };
+        let skel = match held {
+            Some(skel) => skel,
+            None => {
+                let skel = match catalog.get(key) {
+                    Some(
+                        asset_world::MapXModelSceneAsset::Iw4(skel)
+                        | asset_world::MapXModelSceneAsset::Iw5(skel)
+                        | asset_world::MapXModelSceneAsset::T6(skel)
+                        | asset_world::MapXModelSceneAsset::T5(skel),
+                    ) => Some(std::sync::Arc::clone(skel)),
+                    Some(asset_world::MapXModelSceneAsset::Unavailable { .. }) | None => None,
+                };
+                self.slots[slot] = Some(DynEntModelHandle {
+                    key: key.clone(),
+                    skel: skel.as_ref().map(std::sync::Arc::downgrade),
+                    radius: skel.as_ref().map_or(0.0, |skel| skel.radius.unwrap_or(0.0)),
+                });
+                skel
+            }
+        };
+        (self.slots[slot].as_ref().expect("filled above"), skel)
+    }
+
+    pub fn skel(
+        &mut self,
+        catalog: &asset_world::MapXModelSceneCatalog,
+        slot: u16,
+        key: &asset_world::MapXModelAssetKey,
+    ) -> Option<std::sync::Arc<asset_model::ModelSkel>> {
+        self.handle(catalog, slot, key).1
+    }
+
+    pub fn radius(
+        &mut self,
+        catalog: Option<&asset_world::MapXModelSceneCatalog>,
+        slot: u16,
+        key: &asset_world::MapXModelAssetKey,
+    ) -> f32 {
+        let Some(catalog) = catalog else {
+            return 0.0;
+        };
+        let slot_at = usize::from(slot);
+        if let Some(Some(handle)) = self.slots.get(slot_at)
+            && handle.key == *key
+        {
+            return handle.radius;
+        }
+        self.handle(catalog, slot, key).0.radius
+    }
 }
 
 pub fn xmodel_radius(
@@ -464,9 +558,11 @@ fn cull_dyn_ent_cell_models(
         (&WorldDynEntInstance, &Transform, &mut Visibility),
         With<DynEntModelEntity>,
     >,
+    mut handles: Local<DynEntModelHandles>,
 ) {
     let planes = fpv_frustum_planes(&cameras);
     let vis = admitted_vis(&cell_vis);
+    handles.sync(catalog.as_ref());
     let catalog = catalog.as_deref();
     for (inst, transform, mut visibility) in &mut instances {
         if inst.dead {
@@ -478,7 +574,7 @@ fn cull_dyn_ent_cell_models(
             continue;
         }
         let origin = transform.translation.to_array();
-        let radius = xmodel_radius(catalog, &inst.current_model);
+        let radius = handles.radius(catalog, inst.index, &inst.current_model);
         let culled = sphere_behind_frustum(origin, radius, &planes);
         if culled {
             *visibility = Visibility::Hidden;
@@ -495,8 +591,10 @@ fn pose_dyn_ents(
     lod_skinned: Res<render_scene::LodRampSkinnedDvar>,
     prepared: Res<crate::anim::model_materials::PreparedModelMaterials>,
     mut product: ResMut<DynEntPoseProduct>,
+    mut handles: Local<DynEntModelHandles>,
 ) {
     product.owners.clear();
+    handles.sync(catalog.as_ref());
     if catalog.as_ref().is_some_and(|c| c.is_changed()) {
         product.assets.clear();
     }
@@ -515,17 +613,10 @@ fn pose_dyn_ents(
         }
 
         let camera_hidden = *visibility == Visibility::Hidden;
-        let skel = match catalog.get(&inst.current_model) {
-            Some(
-                asset_world::MapXModelSceneAsset::Iw4(skel)
-                | asset_world::MapXModelSceneAsset::Iw5(skel)
-                | asset_world::MapXModelSceneAsset::T6(skel)
-                | asset_world::MapXModelSceneAsset::T5(skel),
-            ) => skel.as_ref(),
-            Some(asset_world::MapXModelSceneAsset::Unavailable { .. }) | None => {
-                continue;
-            }
+        let Some(skel) = handles.skel(catalog, inst.index, &inst.current_model) else {
+            continue;
         };
+        let skel = skel.as_ref();
 
         let camera_lod = smodel_camera_lod(
             skel.lod,
@@ -700,8 +791,12 @@ fn append_dynent_draws(
         }
     }
     if !draws.is_empty() {
-        let topology =
-            topology_fingerprint(&plan.indices, &plan.surface_ranges, plan.vertices.len());
+        let rows = &mut *plan;
+        let topology = rows.topology_memo.fingerprint(
+            &rows.indices,
+            &rows.surface_ranges,
+            rows.vertices.len(),
+        );
         let rev = plan.revision;
         plan.revision = stamp_plan_geometry(&mut plan.revisions, rev, topology);
     }

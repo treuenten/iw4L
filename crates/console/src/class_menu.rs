@@ -18,6 +18,18 @@ pub(crate) struct ClassMenuState {
     camo: bool,
     samples: bool,
     hover: usize,
+    published: Option<ClassMenuInputs>,
+}
+
+#[derive(Debug, PartialEq)]
+struct ClassMenuInputs {
+    store: bevy::ecs::change_detection::Tick,
+    catalog: bevy::ecs::change_detection::Tick,
+    player_data: bevy::ecs::change_detection::Tick,
+    loading: bool,
+    shell_loc: bevy::ecs::change_detection::Tick,
+    prepared_loc: Option<bevy::ecs::change_detection::Tick>,
+    status: Option<String>,
 }
 
 fn camo_names(catalog: &ClassLoadoutCatalog, weapon: &str) -> Vec<String> {
@@ -268,10 +280,29 @@ pub(crate) fn route(
             open_class_setup(&mut state, &mut store, &player_data, &mut menus);
         }
     }
-    for command in events
-        .read()
+    let commands: Vec<&ConsoleCommand> = events.read().collect();
+    let dvar_writes = commands
+        .iter()
+        .any(|command| crate::barracks_menu::writes_any_dvar(command));
+    let class_commands: Vec<&ConsoleCommand> = commands
+        .into_iter()
         .filter(|command| command.name.starts_with("ui_class_"))
+        .collect();
+    if class_commands.is_empty()
+        && !dvar_writes
+        && state.published.as_ref().is_some_and(|published| {
+            published.store == store.last_changed()
+                && published.catalog == catalog.last_changed()
+                && published.player_data == player_data.last_changed()
+                && published.loading == loading.is_some()
+                && published.shell_loc == shell_loc.last_changed()
+                && published.prepared_loc == prepared_loc.as_ref().map(|loc| loc.last_changed())
+                && published.status.as_deref() == dvars.get("ui_class_status")
+        })
     {
+        return;
+    }
+    for command in class_commands {
         if command.name == "ui_class_setup" && loading.is_some() {
             menus.write(UiMenuRequest::Open("class_loading".into()));
             continue;
@@ -1091,4 +1122,13 @@ pub(crate) fn route(
             choices.len().max(1).div_ceil(PAGE_SIZE)
         ),
     );
+    state.published = (!dvar_writes).then(|| ClassMenuInputs {
+        store: store.last_changed(),
+        catalog: catalog.last_changed(),
+        player_data: player_data.last_changed(),
+        loading: loading.is_some(),
+        shell_loc: shell_loc.last_changed(),
+        prepared_loc: prepared_loc.as_ref().map(|loc| loc.last_changed()),
+        status: dvars.get("ui_class_status").map(str::to_owned),
+    });
 }

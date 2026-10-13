@@ -47,7 +47,7 @@ pub use packet::{
 pub use products::{
     FrameMaterialRefusal, FrameProduct, FrameProductKind, FrameProductStatus,
     FrameProductsSnapshot, MissingProductCause, ProductTarget, RenderFocusFrame, SourceRevisions,
-    SpotShadowFrameSlot, publish_rows,
+    SpotShadowFrameSlot, TopologyMemo, publish_rows,
 };
 pub use retained::{
     BspCameraLane, LightAttenuationBind, RENDER_FX_DEPTH_HACK, RetainedDrawItem, RetainedDrawKind,

@@ -6,7 +6,7 @@ use crate::anim::xmodel_pose::PosedModelSurface;
 use crate::occupancy::script_model::pose_script_dobj_with_materials;
 use crate::{
     ItemAssetDraw, ItemDrawPlan, ItemOwnerDraw, XMODEL_OBJECT_ID_ITEM_BASE, append_item_surfaces,
-    lighting_box_half, stamp_plan_geometry, topology_fingerprint,
+    lighting_box_half, stamp_plan_geometry,
 };
 use anim_iw4::DOBJ_RADIUS_PARENT_ROOT;
 use entity_iw4::{ET_ITEM, Trajectory, evaluate_trajectory};
@@ -480,8 +480,12 @@ fn append_item_draws(
         perf::item(entity_iw4::ET_ITEM, None, None, Some("posed"));
     }
     if !draws.is_empty() {
-        let topology =
-            topology_fingerprint(&plan.indices, &plan.surface_ranges, plan.vertices.len());
+        let rows = &mut *plan;
+        let topology = rows.topology_memo.fingerprint(
+            &rows.indices,
+            &rows.surface_ranges,
+            rows.vertices.len(),
+        );
         let rev = plan.revision;
         plan.revision = stamp_plan_geometry(&mut plan.revisions, rev, topology);
     }

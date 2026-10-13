@@ -205,7 +205,9 @@ pub fn push_remote_body_cpu_draw(
 }
 
 pub fn finish_remote_body_draw_plan(plan: &mut RemoteBodyDrawPlan) {
-    let topology = topology_fingerprint(&plan.indices, &plan.surface_ranges, plan.decoded_n);
+    let topology =
+        plan.topology_memo
+            .fingerprint(&plan.indices, &plan.surface_ranges, plan.decoded_n);
     if plan.revisions.topology != topology {
         plan.revisions.topology = topology;
     }

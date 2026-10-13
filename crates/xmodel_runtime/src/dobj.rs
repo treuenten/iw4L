@@ -3,6 +3,8 @@ use anim_iw4::{
     quat_add_weighted, quat16, set_hide_part_bit, surface_hidden, xmodel_no_scale_bit,
 };
 use glam::{Mat4, Quat, Vec3};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, Weak};
 
 use crate::AnimClip;
 
@@ -58,7 +60,37 @@ pub struct DObj {
     pub bones: Vec<Bone>,
     pub models: Vec<ModelSlot>,
     pub duplicates: Vec<(usize, usize)>,
+    clip_tracks: ClipTrackMemo,
 }
+
+#[derive(Debug, Default)]
+struct ClipTrackMemo {
+    entries: Mutex<ClipTrackEntries>,
+}
+
+#[derive(Debug, Default)]
+struct ClipTrackEntries {
+    bones: (usize, usize),
+    // Keyed by the clip's address: the Weak keeps that address from going to
+    // another clip, and the clip from being changed in place, while the entry
+    // exists.
+    by_clip: HashMap<usize, ClipTrackEntry>,
+    prune_at: usize,
+}
+
+#[derive(Debug)]
+struct ClipTrackEntry {
+    clip: Weak<AnimClip>,
+    tracks: Arc<[Option<usize>]>,
+}
+
+impl Clone for ClipTrackMemo {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+const CLIP_TRACK_MEMO_PRUNE_MIN: usize = 64;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DObjBoneOrientation {
@@ -286,6 +318,7 @@ impl DObj {
             bones,
             models: slots,
             duplicates,
+            clip_tracks: ClipTrackMemo::default(),
         })
     }
 
@@ -303,6 +336,39 @@ impl DObj {
             bits.set(i);
         }
         bits
+    }
+
+    pub fn tracks_for_shared(&self, clip: &Arc<AnimClip>) -> Arc<[Option<usize>]> {
+        let key = Arc::as_ptr(clip) as usize;
+        let bones = (self.bones.as_ptr() as usize, self.bones.len());
+        let mut entries = self
+            .clip_tracks
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if entries.bones != bones {
+            entries.bones = bones;
+            entries.by_clip.clear();
+        }
+        if let Some(entry) = entries.by_clip.get(&key) {
+            debug_assert_eq!(&entry.tracks[..], &self.tracks_for(clip)[..]);
+            return Arc::clone(&entry.tracks);
+        }
+        if entries.by_clip.len() >= entries.prune_at.max(CLIP_TRACK_MEMO_PRUNE_MIN) {
+            entries
+                .by_clip
+                .retain(|_, entry| entry.clip.strong_count() > 0);
+            entries.prune_at = entries.by_clip.len().saturating_mul(2);
+        }
+        let tracks: Arc<[Option<usize>]> = self.tracks_for(clip).into();
+        entries.by_clip.insert(
+            key,
+            ClipTrackEntry {
+                clip: Arc::downgrade(clip),
+                tracks: Arc::clone(&tracks),
+            },
+        );
+        tracks
     }
 
     pub fn tracks_for(&self, clip: &AnimClip) -> Vec<Option<usize>> {

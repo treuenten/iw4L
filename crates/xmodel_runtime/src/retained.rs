@@ -348,9 +348,14 @@ fn locals_from_leaves(
 ) -> Result<Vec<Local>, MaterializeError> {
     let bindings = leaves
         .iter()
-        .map(|leaf| dobj.tracks_for(leaf.clip))
+        .map(|leaf| dobj.tracks_for_shared(leaf.clip))
         .collect::<Vec<_>>();
-    if !leaves.is_empty() && !bindings.iter().flatten().any(Option::is_some) {
+    if !leaves.is_empty()
+        && !bindings
+            .iter()
+            .flat_map(|tracks| tracks.iter())
+            .any(Option::is_some)
+    {
         return Err(MaterializeError::AnimatedClipHasNoMatchingTrack);
     }
     let instances = leaves
@@ -381,9 +386,13 @@ fn apply_additive_layers(
             let bindings = layer
                 .leaves
                 .iter()
-                .map(|leaf| dobj.tracks_for(leaf.clip))
+                .map(|leaf| dobj.tracks_for_shared(leaf.clip))
                 .collect::<Vec<_>>();
-            if !bindings.iter().flatten().any(Option::is_some) {
+            if !bindings
+                .iter()
+                .flat_map(|tracks| tracks.iter())
+                .any(Option::is_some)
+            {
                 return Err(MaterializeError::AnimatedClipHasNoMatchingTrack);
             }
             let instances = layer
