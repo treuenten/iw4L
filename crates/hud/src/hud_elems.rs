@@ -156,7 +156,7 @@ fn elem_text(
 
 fn place_waypoint(
     elem: &HudElem,
-    camera: (&Camera, &GlobalTransform),
+    camera: (&Camera, &GlobalTransform, &Projection),
     entities: &Query<(&CEntity, &CEntityRuntime)>,
     surface: &crate::surface::Hud2dSurface,
     eyes: i32,
@@ -183,21 +183,27 @@ fn place_waypoint(
             origin + Vec3::Z * WAYPOINT_PLAYER_OFFSET_STAND
         }
     };
-    let (camera, transform) = camera;
+    let (camera, transform, projection) = camera;
     let eye = transform.translation();
     let forward = *transform.forward();
     let depth = (world - eye).dot(forward);
+    let near = match projection {
+        Projection::Perspective(perspective) => perspective.near,
+        _ => 0.0,
+    };
     let bits = elem.value as i32;
     let constant = bits & WAYPOINT_CONSTANT_SIZE != 0;
     let scale = surface.scale_virtual_to_real()[1];
     let (w, h) = (surface.width(), surface.height());
-    let mirrored = if depth <= 0.0 {
-        world - forward * (2.0 * depth - 1.0)
+    let probe_depth = if depth > near {
+        depth
     } else {
-        world
+        (1.0 - depth).max(near + 1.0)
     };
-    let pos = camera.world_to_viewport(transform, mirrored).ok()?;
-    let onscreen = depth > 0.0 && (0.0..=w).contains(&pos.x) && (0.0..=h).contains(&pos.y);
+    let pos = camera
+        .world_to_viewport(transform, world + forward * (probe_depth - depth))
+        .ok()?;
+    let onscreen = depth > near && (0.0..=w).contains(&pos.x) && (0.0..=h).contains(&pos.y);
     if !constant {
         if !onscreen {
             return None;
@@ -241,7 +247,7 @@ pub(crate) fn update_hud_elems(
     mut pass: ResMut<HudTessPass>,
     mut sound_latch: ResMut<crate::hudelem::HudElemSoundLatch>,
     mut ui_sound: MessageWriter<UiPlaySound>,
-    cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    cameras: Query<(&Camera, &GlobalTransform, &Projection), With<Camera3d>>,
     entities: Query<(&CEntity, &CEntityRuntime)>,
     view: Option<Res<frame::ViewSubject>>,
 ) {
@@ -330,7 +336,7 @@ pub(crate) fn update_hud_elems(
                 continue;
             }
             let placed = if elem.elem_type == HE_TYPE_WAYPOINT {
-                let Some(camera) = cameras.iter().find(|(c, _)| c.is_active) else {
+                let Some(camera) = cameras.iter().find(|(c, _, _)| c.is_active) else {
                     continue;
                 };
                 let Some((at, size)) = place_waypoint(elem, camera, &entities, &surface, eyes)
