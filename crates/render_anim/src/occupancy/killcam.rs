@@ -23,6 +23,28 @@ pub struct KillcamCamera {
     last_replay_tick: Option<u32>,
     last_pose: Option<WorldCameraPose>,
     blend_until: i32,
+    sentry: bool,
+}
+
+const SENTRY_GUN_TOP: f32 = 55.0;
+
+fn is_sentry(snapshot: &sim::Snapshot, number: i32) -> bool {
+    let Some(mover) = snapshot
+        .meta
+        .script_movers
+        .iter()
+        .find(|mover| mover.state.number == number)
+    else {
+        return false;
+    };
+    snapshot.meta.entity_dobjs.iter().any(|(owner, dobj)| {
+        owner.script_model() == Some(mover.id)
+            && dobj
+                .composition
+                .models
+                .first()
+                .is_some_and(|model| model.model.starts_with("sentry_"))
+    })
 }
 
 fn entity_origin(es: &EntityState, now: i32) -> Vec3 {
@@ -222,6 +244,7 @@ impl KillcamCamera {
         let projectile = snapshot.projectiles.iter().find(|p| p.entnum == number);
         if self.entity != Some(number) {
             let mode = classify_view(presented, viewer, in_killcam, weapons)?;
+            self.sentry = mode == KillCamMode::Mode6Turret && is_sentry(snapshot, number);
             self.rest_ground = false;
             self.entity = Some(number);
             self.generation = usize::try_from(number)
@@ -320,6 +343,17 @@ impl KillcamCamera {
             KillCamMode::Mode2Airstrike => {
                 let origin = anchor.with_z(anchor.z.max(self.target.z + 24.0));
                 (origin, look_angles(self.target - origin), 50.0)
+            }
+            KillCamMode::Mode6Turret if self.sentry => {
+                let (_, _, base_up) = math_iw4::angle_vectors(self.angles);
+                let gun = anchor + Vec3::from_array(base_up) * SENTRY_GUN_TOP;
+                let aim = look_angles(self.target - gun);
+                let (aim_forward, _, aim_up) = math_iw4::angle_vectors(aim);
+                (
+                    gun - Vec3::from_array(aim_forward) * 10.0 + Vec3::from_array(aim_up) * 10.0,
+                    aim,
+                    50.0,
+                )
             }
             KillCamMode::Mode6Turret => (anchor - forward * 10.0 + up * 10.0, self.angles, 50.0),
             KillCamMode::Mode7Javelin => {
