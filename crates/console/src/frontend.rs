@@ -24,6 +24,29 @@ pub(crate) struct FrontendState {
     lobby_password: String,
     rules_seeded: bool,
     family_inventory: Option<u8>,
+    shown_members: Option<(Vec<String>, Option<usize>)>,
+    shown_maps: Option<MapRows>,
+    shown_adverts: Option<AdvertRows>,
+}
+
+type Tick = bevy::ecs::change_detection::Tick;
+
+// The map previews also depend on which zone UI images have loaded so far, which
+// none of these show, so they are written every frame.
+#[derive(Debug, PartialEq)]
+struct MapRows {
+    map_pack: usize,
+    map_page: usize,
+    maps: Tick,
+    presentation: Option<Tick>,
+    localize: Option<Tick>,
+}
+
+#[derive(Debug, PartialEq)]
+struct AdvertRows {
+    adverts: Vec<net::MasterAdvert>,
+    presentation: Option<Tick>,
+    localize: Option<Tick>,
 }
 
 #[derive(SystemParam)]
@@ -241,7 +264,9 @@ pub(crate) fn route(
         );
     }
     let mut browser_page_changed = false;
+    let mut commands_seen = false;
     for command in events.read() {
+        commands_seen = true;
         if command.name.starts_with("ui_browser") || command.name.starts_with("ui_join_lobby") {
             state.browser_notice = None;
         }
@@ -741,24 +766,29 @@ pub(crate) fn route(
     } else {
         dvars.set("ui_lobby_players", "PLAYERS: 1 / 18");
     }
-    for row in 0..18 {
-        let name = lobby_names.get(row);
-        dvars.set(
-            &format!("ui_lobby_member_{row}"),
-            name.map(String::as_str).unwrap_or(""),
-        );
-        dvars.set(
-            &format!("ui_lobby_member_{row}_local"),
-            if local_lobby_row == Some(row) {
-                "1"
-            } else {
-                "0"
-            },
-        );
-        dvars.set(
-            &format!("ui_lobby_member_{row}_visible"),
-            if name.is_some() { "1" } else { "0" },
-        );
+    let members = (lobby_names, local_lobby_row);
+    if commands_seen || state.shown_members.as_ref() != Some(&members) {
+        let (lobby_names, local_lobby_row) = &members;
+        for row in 0..18 {
+            let name = lobby_names.get(row);
+            dvars.set(
+                &format!("ui_lobby_member_{row}"),
+                name.map(String::as_str).unwrap_or(""),
+            );
+            dvars.set(
+                &format!("ui_lobby_member_{row}_local"),
+                if *local_lobby_row == Some(row) {
+                    "1"
+                } else {
+                    "0"
+                },
+            );
+            dvars.set(
+                &format!("ui_lobby_member_{row}_visible"),
+                if name.is_some() { "1" } else { "0" },
+            );
+        }
+        state.shown_members = Some(members);
     }
     dvars.set("ui_lobby_host", if party.is_host { "1" } else { "0" });
     dvars.set("ui_lobby_public", if state.public { "1" } else { "0" });
@@ -818,31 +848,41 @@ pub(crate) fn route(
         "ui_map_preview",
         hovered_map.map_or_else(String::new, |map| preview_image(map)),
     );
-    for row in 0..PAGE_SIZE {
-        dvars.set(
-            &format!("ui_map_{row}"),
-            pack.get(state.map_page * PAGE_SIZE + row)
-                .map(|map| label(map))
-                .unwrap_or_default(),
-        );
-    }
-    let pages = map_pages(&maps);
-    for slot in 0..PACK_SLOTS {
-        let page = pages.get(slot);
-        dvars.set(
-            &format!("ui_map_pack_{slot}"),
-            page.map_or("", |(_, _, label)| label.as_str()),
-        );
-        dvars.set(
-            &format!("ui_map_pack_tint_{slot}"),
-            if page
-                .is_some_and(|(pack, page, _)| *pack == state.map_pack && *page == state.map_page)
-            {
-                "1"
-            } else {
-                "0.45"
-            },
-        );
+    let map_rows = MapRows {
+        map_pack: state.map_pack,
+        map_page: state.map_page,
+        maps: maps.last_changed(),
+        presentation: presentation.as_ref().map(|p| p.last_changed()),
+        localize: localize.as_ref().map(|l| l.last_changed()),
+    };
+    if commands_seen || state.shown_maps.as_ref() != Some(&map_rows) {
+        for row in 0..PAGE_SIZE {
+            dvars.set(
+                &format!("ui_map_{row}"),
+                pack.get(state.map_page * PAGE_SIZE + row)
+                    .map(|map| label(map))
+                    .unwrap_or_default(),
+            );
+        }
+        let pages = map_pages(&maps);
+        for slot in 0..PACK_SLOTS {
+            let page = pages.get(slot);
+            dvars.set(
+                &format!("ui_map_pack_{slot}"),
+                page.map_or("", |(_, _, label)| label.as_str()),
+            );
+            dvars.set(
+                &format!("ui_map_pack_tint_{slot}"),
+                if page.is_some_and(|(pack, page, _)| {
+                    *pack == state.map_pack && *page == state.map_page
+                }) {
+                    "1"
+                } else {
+                    "0.45"
+                },
+            );
+        }
+        state.shown_maps = Some(map_rows);
     }
     if let Some(browser) = services.browser.as_ref() {
         let snapshot = browser.snapshot();
@@ -940,77 +980,92 @@ pub(crate) fn route(
             );
         }
     }
-    for row in 0..PAGE_SIZE {
-        let advert = state.adverts.get(row);
-        dvars.set(
-            &format!("ui_browser_{row}_visible"),
-            if advert.is_some() { "1" } else { "0" },
-        );
-        dvars.set(
-            &format!("ui_browser_{row}_id"),
-            advert
-                .map(|advert| advert.id.to_string())
-                .unwrap_or_default(),
-        );
-        let cells = advert
-            .map(|advert| {
-                let status = if advert.locked {
-                    "CLOSED".into()
-                } else if !advert.missing.is_empty() {
-                    format!(
-                        "NEEDS {}",
-                        net::content_names(advert.missing).to_uppercase()
-                    )
-                } else if advert.players >= advert.max_players {
-                    "FULL".into()
-                } else if advert.in_match {
-                    "IN MATCH".into()
-                } else if advert.password_protected {
-                    "PASSWORD".into()
-                } else {
-                    "OPEN".into()
-                };
-                let mode = sim::HostGameModeSelection::from_token(&advert.mode)
-                    .map_or(advert.mode.as_str(), |mode| mode.display_name());
-                let map_key = advert
-                    .map
-                    .split_once(':')
-                    .filter(|(pack, _)| *pack == "iw4")
-                    .map(|(_, name)| {
+    let presentation_tick = presentation.as_ref().map(|p| p.last_changed());
+    let localize_tick = localize.as_ref().map(|l| l.last_changed());
+    let adverts_shown = !commands_seen
+        && state.shown_adverts.as_ref().is_some_and(|shown| {
+            shown.adverts == state.adverts
+                && shown.presentation == presentation_tick
+                && shown.localize == localize_tick
+        });
+    if !adverts_shown {
+        for row in 0..PAGE_SIZE {
+            let advert = state.adverts.get(row);
+            dvars.set(
+                &format!("ui_browser_{row}_visible"),
+                if advert.is_some() { "1" } else { "0" },
+            );
+            dvars.set(
+                &format!("ui_browser_{row}_id"),
+                advert
+                    .map(|advert| advert.id.to_string())
+                    .unwrap_or_default(),
+            );
+            let cells = advert
+                .map(|advert| {
+                    let status = if advert.locked {
+                        "CLOSED".into()
+                    } else if !advert.missing.is_empty() {
                         format!(
-                            "MPUI_{}",
-                            name.trim_start_matches("mp_").to_ascii_uppercase()
+                            "NEEDS {}",
+                            net::content_names(advert.missing).to_uppercase()
                         )
-                    });
-                let fallback_map = label(&advert.map);
-                let map = map_key
-                    .as_ref()
-                    .and_then(|key| localize.as_ref()?.text(key))
-                    .unwrap_or(&fallback_map);
-                let assets = net::content_names(master_protocol::ContentFlags(
-                    advert.available.0 & !net::CONTENT_IW4,
-                ))
-                .to_uppercase();
-                [
-                    browser_cell(&advert.name, 22),
-                    browser_cell(map, 18),
-                    browser_cell(mode, 20),
-                    format!("{}/{}", advert.players, advert.max_players),
-                    if assets.is_empty() {
-                        "—".into()
+                    } else if advert.players >= advert.max_players {
+                        "FULL".into()
+                    } else if advert.in_match {
+                        "IN MATCH".into()
+                    } else if advert.password_protected {
+                        "PASSWORD".into()
                     } else {
-                        assets
-                    },
-                    status,
-                ]
-            })
-            .unwrap_or_default();
-        for (key, value) in ["host", "map", "mode", "players", "assets", "state"]
-            .into_iter()
-            .zip(cells)
-        {
-            dvars.set(&format!("ui_browser_{row}_{key}"), value);
+                        "OPEN".into()
+                    };
+                    let mode = sim::HostGameModeSelection::from_token(&advert.mode)
+                        .map_or(advert.mode.as_str(), |mode| mode.display_name());
+                    let map_key = advert
+                        .map
+                        .split_once(':')
+                        .filter(|(pack, _)| *pack == "iw4")
+                        .map(|(_, name)| {
+                            format!(
+                                "MPUI_{}",
+                                name.trim_start_matches("mp_").to_ascii_uppercase()
+                            )
+                        });
+                    let fallback_map = label(&advert.map);
+                    let map = map_key
+                        .as_ref()
+                        .and_then(|key| localize.as_ref()?.text(key))
+                        .unwrap_or(&fallback_map);
+                    let assets = net::content_names(master_protocol::ContentFlags(
+                        advert.available.0 & !net::CONTENT_IW4,
+                    ))
+                    .to_uppercase();
+                    [
+                        browser_cell(&advert.name, 22),
+                        browser_cell(map, 18),
+                        browser_cell(mode, 20),
+                        format!("{}/{}", advert.players, advert.max_players),
+                        if assets.is_empty() {
+                            "—".into()
+                        } else {
+                            assets
+                        },
+                        status,
+                    ]
+                })
+                .unwrap_or_default();
+            for (key, value) in ["host", "map", "mode", "players", "assets", "state"]
+                .into_iter()
+                .zip(cells)
+            {
+                dvars.set(&format!("ui_browser_{row}_{key}"), value);
+            }
         }
+        state.shown_adverts = Some(AdvertRows {
+            adverts: state.adverts.clone(),
+            presentation: presentation_tick,
+            localize: localize_tick,
+        });
     }
 }
 
