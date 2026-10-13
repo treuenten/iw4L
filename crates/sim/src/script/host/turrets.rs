@@ -36,7 +36,6 @@ pub(crate) struct Turret {
     drop_pitch: f32,
     convergence: [f32; 2],
     minimap: bool,
-    solid: bool,
     minigun: bool,
     mode_change_wait: f32,
 }
@@ -161,7 +160,6 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
                 drop_pitch: 0.0,
                 convergence: [0.0; 2],
                 minimap: false,
-                solid: false,
                 minigun: false,
                 mode_change_wait: 0.0,
             },
@@ -248,7 +246,16 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
         edit(world, receiver, |t| t.fire_enabled = true)
     });
     registry.register(Method, "maketurretsolid", |world, receiver, _| {
-        edit(world, receiver, |t| t.solid = true)
+        let object = turret_of(world, receiver)?;
+        if let Some(entity) = world
+            .resource_mut::<RoundScript>()
+            .entities
+            .get_mut(&object)
+        {
+            entity.solid = true;
+            entity.contents = 0;
+        }
+        Ok(Value::Undefined)
     });
     registry.register(Method, "setsentryminigun", |world, receiver, _| {
         edit(world, receiver, |t| t.minigun = true)
