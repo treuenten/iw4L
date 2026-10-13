@@ -124,7 +124,7 @@ pub struct XAnimTreeRuntime {
 
 #[derive(Debug)]
 pub(crate) struct ActiveXAnimLeaf<'a> {
-    pub clip: &'a AnimClip,
+    pub clip: &'a Arc<AnimClip>,
     pub time: f32,
     pub weight: f32,
     pub parts: Option<&'a PartBits>,
