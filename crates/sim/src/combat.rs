@@ -559,6 +559,18 @@ pub(crate) fn advance_weapon_command(
             apply_player_anim_event(world, *id, anim);
         }
 
+        let primary_after = if hand0.weapon != started_weapon {
+            crate::script_player::primary_after_switch(
+                hand0.weapon,
+                crate::script_player::weapon_is_alt_mode(world, hand0.weapon),
+                u32::from(cmd.weapon),
+                u32::from(cmd.weapon_mapped),
+                &ps.weapons,
+                |w| world.combat_facts_for(w).map_or(0, |f| f.alternate_weapon),
+            )
+        } else {
+            ps.weapon_primary
+        };
         if let Some(ps_mut) = world.player_mut(*id) {
             for (index, hand) in hands.iter().enumerate().take(last_hand as usize + 1) {
                 weapon_iw4::set_weapon_rechamber_pending(
@@ -576,11 +588,7 @@ pub(crate) fn advance_weapon_command(
                 if hand0.weaponstate == weapon_iw4::WeaponState::RaisingAltswitch as i32 {
                     ps_mut.aim_spread_scale = ps_mut.aim_spread_scale.max(128.0);
                 }
-                ps_mut.weapon_primary = if hand0.weapon == u32::from(cmd.weapon) {
-                    u32::from(cmd.weapon_mapped)
-                } else {
-                    0
-                };
+                ps_mut.weapon_primary = primary_after;
             }
             ps_mut.weaponstate_primary = hand0.weaponstate;
             ps_mut.weapon_time = hand0.weapon_time;
