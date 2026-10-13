@@ -64,6 +64,16 @@ pub struct RetainedModelCapability {
     pub bounds: Option<([f32; 3], [f32; 3])>,
 
     pub radius: Option<f32>,
+
+    pub phys: Option<ModelPhys>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ModelPhys {
+    pub mass: f32,
+    pub bounce: f32,
+    pub friction: f32,
+    pub explosive_force_scale: f32,
 }
 
 #[derive(Clone, Debug)]

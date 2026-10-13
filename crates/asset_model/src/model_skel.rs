@@ -90,6 +90,8 @@ pub struct ModelSkel {
 
     pub bounds: Option<([f32; 3], [f32; 3])>,
 
+    pub phys: Option<xmodel_runtime::ModelPhys>,
+
     pub contents: Option<u32>,
 
     pub coll_lod: i16,
@@ -171,6 +173,7 @@ impl ModelSkel {
             movement_brushes: self.movement_brushes.clone(),
             bounds: self.bounds,
             radius: self.radius,
+            phys: self.phys,
         })
     }
 
@@ -662,6 +665,7 @@ fn capture_model_skel_iw4(
         rigid_verts,
         blend_verts,
         packed_vertices: packed_vertices.into(),
+        phys: None,
         radius: geometry.radius,
         bounds: match (geometry.bounds_mid, geometry.bounds_half) {
             (Some(mid), Some(half))
@@ -1206,6 +1210,7 @@ fn capture_model_skel_t5(
         rigid_verts,
         blend_verts,
         packed_vertices: packed_vertices.into(),
+        phys: None,
         radius: geometry.radius,
         bounds: None,
         contents: Some(geometry.contents),
@@ -1820,6 +1825,7 @@ fn capture_model_skel_iw5(
         rigid_verts,
         blend_verts,
         packed_vertices: packed_vertices.into(),
+        phys: None,
         radius: geometry.radius,
         bounds: None,
         contents: None,

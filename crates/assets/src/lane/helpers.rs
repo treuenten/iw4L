@@ -65,11 +65,9 @@ impl MapXModelCatalog {
             return;
         };
         let slot_live = geometry.phys_preset.is_some();
-        let named = geometry
-            .phys_preset
-            .and_then(|preset_slot| phys_presets.at_slot(preset_slot))
-            .is_some();
-        self.scene_assets.note_xmodel_phys_preset(slot_live, named);
+        let phys = phys_presets.model_phys(geometry.phys_preset);
+        self.scene_assets
+            .note_xmodel_phys_preset(slot_live, phys.is_some());
         let Some(name) = geometry.name.and_then(|p| stream.cstr(p).ok()) else {
             self.failed += 1;
             return;
@@ -82,7 +80,10 @@ impl MapXModelCatalog {
             Some(materials),
             &self.shared_surfaces,
         )
-        .map(|skel| MapXModelSceneAsset::Iw4(std::sync::Arc::new(skel)))
+        .map(|mut skel| {
+            skel.phys = phys;
+            MapXModelSceneAsset::Iw4(std::sync::Arc::new(skel))
+        })
         .unwrap_or(MapXModelSceneAsset::Unavailable {
             reason: "IW4 XModel scene skeleton capture failed",
         });

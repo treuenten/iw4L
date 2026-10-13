@@ -215,6 +215,7 @@ pub(crate) struct CommonWalkSink {
     pub scripts: crate::ScriptSources,
     pub scene_models: asset_world::MapXModelSceneCatalog,
     pub shared_surfaces: asset_model::SharedXModelSurfaces,
+    pub phys_presets: asset_world::PhysPresetCatalog,
     script_strings: ScriptStrings,
     pub walked: usize,
 
@@ -1513,13 +1514,17 @@ impl AssetLinkSink for CommonWalkSink {
             if let Some(geometry) = stream.xmodel()
                 && let Some(name) = geometry.name.and_then(|p| stream.cstr(p).ok())
             {
+                let phys = self.phys_presets.model_phys(geometry.phys_preset);
                 let skel = asset_model::capture_xmodel_skel(
                     stream,
                     &self.script_strings,
                     geometry,
                     Some(&self.materials),
                 )
-                .map(|skel| self.shared_surfaces.share_geometry(skel));
+                .map(|mut skel| {
+                    skel.phys = phys;
+                    self.shared_surfaces.share_geometry(skel)
+                });
                 if let Some(skel) = &skel {
                     self.shared_surfaces.retain(stream, geometry, skel.clone());
                     self.fx_models.capture_shared(skel.clone(), &self.materials);
@@ -1539,6 +1544,9 @@ impl AssetLinkSink for CommonWalkSink {
             }
             self.models.capture(stream);
         }
+        if ty == AssetType::PhysPreset {
+            self.phys_presets.capture(stream, slot, insert_slot);
+        }
         Ok(())
     }
 
@@ -1557,6 +1565,9 @@ impl AssetLinkSink for CommonWalkSink {
             if let Some(&name) = self.xmodel_names.get(&target) {
                 self.xmodel_names.insert(slot, name);
             }
+        }
+        if ty == AssetType::PhysPreset {
+            self.phys_presets.alias(slot, target);
         }
         Ok(())
     }

@@ -67,6 +67,7 @@ impl ZoneLane for Iw4Lane {
         image: &ZoneImage,
         progress: &LoadProgress,
         shared_surfaces: asset_model::SharedXModelSurfaces,
+        common_phys_presets: &[asset_world::OwnedPhysPreset],
         material_seed: asset_material::MaterialCatalog,
         common_film_visions: &super::FilmVisionCatalog,
     ) -> LoadedWorld {
@@ -117,6 +118,8 @@ impl ZoneLane for Iw4Lane {
         let seeded_techsets = material_seed.technique_set_facts().to_vec();
         sink.seed_materials(material_seed);
         sink.map_xmodels.shared_surfaces = shared_surfaces;
+        sink.phys_presets
+            .seed_named(common_phys_presets.iter().cloned());
         sink.set_capture_zone(asset_core::ZoneOwner::from_zone_path(path));
         sink.set_capture_ns(asset_core::AssetNamespace::Iw4);
         sink.sound = Some(asset_audio::ZoneSoundCapture::for_map(
@@ -353,7 +356,7 @@ impl ZoneLane for Iw4Lane {
                     geometry,
                     |slot| map_xmodels.name_at_slot(slot).map(str::to_owned),
                     |slot| fx.name_at_slot(slot).map(str::to_owned),
-                    |slot| phys_presets.at_slot(slot).cloned(),
+                    |slot| phys_presets.at_slot_in_zone(slot).cloned(),
                 ),
                 None => asset_world::DynEntCatalog::default(),
             };
@@ -1090,6 +1093,7 @@ impl ZoneLane for Iw4Lane {
                 pending_images,
                 scene_models: sink.scene_models,
                 shared_surfaces: sink.shared_surfaces,
+                phys_presets: sink.phys_presets.named_presets(),
                 weapons,
                 cac_tables: sink.stats_tables.into_values().collect(),
                 fpv: fpv_meshes,
@@ -1128,6 +1132,7 @@ impl ZoneLane for Iw4Lane {
                 pending_images: None,
                 scene_models: sink.scene_models,
                 shared_surfaces: sink.shared_surfaces,
+                phys_presets: sink.phys_presets.named_presets(),
                 weapons,
                 cac_tables: sink.stats_tables.into_values().collect(),
                 fpv: fpv_meshes,

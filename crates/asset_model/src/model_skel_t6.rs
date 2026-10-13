@@ -264,6 +264,7 @@ pub fn capture_model_skel_t6(
         rigid_verts,
         blend_verts,
         packed_vertices: packed_vertices.into(),
+        phys: None,
         radius: Some(model.h_f32(off::RADIUS)),
         bounds: None,
         contents: Some(model.h_u32(off::CONTENTS)),
