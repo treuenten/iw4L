@@ -36,7 +36,6 @@ pub(crate) struct Turret {
     drop_pitch: f32,
     convergence: [f32; 2],
     minimap: bool,
-    solid: bool,
     minigun: bool,
     mode_change_wait: f32,
 }
@@ -161,7 +160,6 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
                 drop_pitch: 0.0,
                 convergence: [0.0; 2],
                 minimap: false,
-                solid: false,
                 minigun: false,
                 mode_change_wait: 0.0,
             },
@@ -248,7 +246,16 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
         edit(world, receiver, |t| t.fire_enabled = true)
     });
     registry.register(Method, "maketurretsolid", |world, receiver, _| {
-        edit(world, receiver, |t| t.solid = true)
+        let object = turret_of(world, receiver)?;
+        if let Some(entity) = world
+            .resource_mut::<RoundScript>()
+            .entities
+            .get_mut(&object)
+        {
+            entity.solid = true;
+            entity.contents = 0;
+        }
+        Ok(Value::Undefined)
     });
     registry.register(Method, "setsentryminigun", |world, receiver, _| {
         edit(world, receiver, |t| t.minigun = true)
@@ -328,7 +335,9 @@ fn hostile(world: &mut World, turret: &Turret, target: u64) -> bool {
         return false;
     }
     let team = |world: &mut World, object: u64| match super::players::entity_field(
-        world, object, "team",
+        world,
+        object,
+        "sessionteam",
     ) {
         Value::String(team) => Some(Arc::<str>::from(team)),
         _ => None,
@@ -338,7 +347,7 @@ fn hostile(world: &mut World, turret: &Turret, target: u64) -> bool {
         .clone()
         .or_else(|| turret.owner.and_then(|o| team(world, o)));
     match own.as_deref() {
-        None | Some("free") => true,
+        None | Some("none" | "free") => true,
         Some(own) => team(world, target).as_deref() != Some(own),
     }
 }
@@ -384,7 +393,8 @@ fn acquire(world: &mut World, object: u64, turret: &Turret, from: [f32; 3]) -> O
             let frame = FrameWorld::from_world(world);
             frame
                 .player(ClientId(client))
-                .and_then(|ps| (ps.health > 0).then_some(ps.origin))
+                .filter(|ps| ps.health > 0 && ps.perks[0] & playerstate_iw4::PERK_COLDBLOODED == 0)
+                .map(|ps| ps.origin)
         };
         let Some(origin) = alive else { continue };
         if !hostile(world, turret, player) {

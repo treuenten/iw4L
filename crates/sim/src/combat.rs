@@ -16,7 +16,7 @@ use entity_iw4::glass_add_damage;
 use movement_iw4::{Pml, is_in_air, mantle::is_weapon_inactive};
 use playerstate_iw4::{ENTITYNUM_NONE, PlayerState, mantle_flags};
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use weapon_iw4::{
     AIM_SPREAD_MOVE_SPEED_THRESHOLD_DEFAULT, AimSpreadMotion, AimSpreadState, CURSOR_HINT_NONE,
     FireWeaponKind, MELEE_TRACE_OFFSETS, MeleeChargeState, OFFHAND_INV_SLOTS, OffhandCmd,
@@ -1208,6 +1208,7 @@ pub(crate) fn phase_trace(
 ) -> TracePhaseOutput {
     let mut output = TracePhaseOutput::default();
     let mut segment_ordinals = HashMap::<(ShotId, PelletId), u16>::new();
+    let mut models_damaged = HashSet::<(ShotId, crate::ScriptModelId)>::new();
     let mut pending: std::collections::VecDeque<_> =
         emissions.iter().copied().map(|em| (em, 0u8)).collect();
     while let Some((em, bounces)) = pending.pop_front() {
@@ -1536,7 +1537,9 @@ pub(crate) fn phase_trace(
                     {
                         continue;
                     }
-                    if let Some(target) = owner.script_model() {
+                    if let Some(target) = owner.script_model()
+                        && models_damaged.insert((em.shot_id, target))
+                    {
                         let bone = match segment.collider {
                             Some(ColliderId::EntityDObjBone { bone, .. }) => {
                                 Some(usize::from(bone))
