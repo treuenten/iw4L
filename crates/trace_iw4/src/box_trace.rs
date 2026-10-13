@@ -26,6 +26,8 @@ struct CapsuleSize {
     radius: f32,
 
     offset_z: f32,
+
+    axis: Option<[f32; 3]>,
 }
 
 impl CapsuleSize {
@@ -47,11 +49,16 @@ impl CapsuleSize {
             offset,
             radius,
             offset_z,
+            axis: None,
         }
     }
 
     fn plane_radius(self, n: [f32; 3]) -> f32 {
-        self.radius + n[2].abs() * self.offset_z
+        let along = match self.axis {
+            None => n[2],
+            Some(a) => n[0] * a[0] + n[1] * a[1] + n[2] * a[2],
+        };
+        self.radius + along.abs() * self.offset_z
     }
 }
 
@@ -103,6 +110,33 @@ where
     (best, glass_encoded)
 }
 
+/// `mins` and `maxs` must be centred on the origin, and `walkable` reads this
+/// frame's z, not `axis`, so the caller sets it from the world-space normal.
+pub fn trace_capsule_along<'a, I>(
+    brushes: I,
+    start: [f32; 3],
+    end: [f32; 3],
+    mins: [f32; 3],
+    maxs: [f32; 3],
+    axis: [f32; 3],
+    mask: u32,
+) -> Trace
+where
+    I: IntoIterator<Item = BrushRef<'a>>,
+{
+    let mut best = Trace {
+        fraction: 1.0,
+        endpos: end,
+        ..Trace::default()
+    };
+    let cap = CapsuleSize {
+        axis: Some(axis),
+        ..CapsuleSize::from_bounds(mins, maxs)
+    };
+    trace_capsule_into(brushes, start, end, cap, mask, &mut best);
+    best
+}
+
 pub fn trace_box_into<'a, I>(
     brushes: I,
     start: [f32; 3],
@@ -115,7 +149,27 @@ pub fn trace_box_into<'a, I>(
 where
     I: IntoIterator<Item = BrushRef<'a>>,
 {
-    let cap = CapsuleSize::from_bounds(mins, maxs);
+    trace_capsule_into(
+        brushes,
+        start,
+        end,
+        CapsuleSize::from_bounds(mins, maxs),
+        mask,
+        best,
+    )
+}
+
+fn trace_capsule_into<'a, I>(
+    brushes: I,
+    start: [f32; 3],
+    end: [f32; 3],
+    cap: CapsuleSize,
+    mask: u32,
+    best: &mut Trace,
+) -> u16
+where
+    I: IntoIterator<Item = BrushRef<'a>>,
+{
     let start = [
         start[0] + cap.offset[0],
         start[1] + cap.offset[1],

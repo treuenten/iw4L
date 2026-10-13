@@ -166,16 +166,11 @@ fn gather(
             .ok_or(Coverage::Unsupported)?;
         let transform = clipmap_iw4::CmodelTransform::new(linked.origin, linked.angles)
             .ok_or(Coverage::Unsupported)?;
-        let start = transform.local_point(input.start);
-        let local_cap = capsule(
-            GroundTraceInput {
-                start,
-                end: start,
-                ..input
-            },
-            false,
-        )
-        .ok_or(Coverage::Unsupported)?;
+        let local_cap = Capsule {
+            a: vec3(transform.local_point(array(cap.a))),
+            b: vec3(transform.local_point(array(cap.b))),
+            radius: cap.radius,
+        };
         let first = model.first_brush as usize;
         let last = first
             .checked_add(usize::from(model.num_brushes))
