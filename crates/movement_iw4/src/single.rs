@@ -94,6 +94,7 @@ pub fn pmove<C: CollisionBackend, L: MantleXAnimLength, R: MantleRootDelta>(
         mantle_movetype: None,
         landing_animation: false,
         fall_damage: 0,
+        step_view_change: 0.0,
     };
 
     update_view_angles(ps, cmd, context.view_angles);
@@ -240,14 +241,14 @@ pub fn pmove<C: CollisionBackend, L: MantleXAnimLength, R: MantleRootDelta>(
         if (ps.pm_flags & pm_flags::MELEE_CHARGE) != 0 {
             melee_charge_move(
                 ps,
-                &pml,
+                &mut pml,
                 bounds.mins,
                 bounds.maxs,
                 bounds.tracemask,
                 collision,
             );
         } else if pml.walking == 0 {
-            air_move(ps, &pml, cmd, context.air, bounds, collision);
+            air_move(ps, &mut pml, cmd, context.air, bounds, collision);
         } else {
             walk_move(ps, &mut pml, cmd, context.walk, bounds, collision);
         }

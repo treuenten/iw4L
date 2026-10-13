@@ -76,7 +76,7 @@ pub fn walk_move<C: CollisionBackend>(
 
     clip_to_ground_plane(&mut ps.velocity, &pml.ground_trace[1..4]);
     if ps.velocity[0] != 0.0 || ps.velocity[1] != 0.0 {
-        step_slide_move(
+        pml.step_view_change += step_slide_move(
             ps,
             pml,
             collision,

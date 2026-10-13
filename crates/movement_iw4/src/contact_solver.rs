@@ -311,26 +311,62 @@ fn land(
         velocity: project(velocity, &[hit.normal]),
     })
 }
+#[derive(Clone, Copy)]
+pub(crate) struct Traversal {
+    pub(crate) motion: Motion,
+    pub(crate) slide_z: f32,
+}
+fn continued_slide_z(plain: Motion, end: Vector) -> f32 {
+    let z = plain.origin[2];
+    let v = plain.velocity;
+    let horizontal = libm::sqrt(v[0] as f64 * v[0] as f64 + v[1] as f64 * v[1] as f64);
+    if !finite(v) || horizontal <= 1e-6 {
+        return z;
+    }
+    let along = ((end[0] as f64 - plain.origin[0] as f64) * v[0] as f64
+        + (end[1] as f64 - plain.origin[1] as f64) * v[1] as f64)
+        / horizontal;
+    if along.is_nan() || along <= 0. {
+        return z;
+    }
+    let carried = z as f64 + v[2] as f64 / horizontal * along;
+    let (low, high) = if end[2] < z { (end[2], z) } else { (z, end[2]) };
+    if carried.is_finite() {
+        (carried as f32).clamp(low, high)
+    } else {
+        z
+    }
+}
 pub(crate) fn traverse(
     m: Motion,
     s: Settings,
     trace: &impl Fn(Vector, Vector) -> Contact,
-) -> Motion {
+) -> Traversal {
     let m = clean(m);
     if !s.dt.is_finite() || s.dt <= 0. {
-        return m;
+        return Traversal {
+            motion: m,
+            slide_z: m.origin[2],
+        };
     }
     let all_solid = core::cell::Cell::new(false);
+    let met_other = core::cell::Cell::new(false);
     let baseline_trace = |a, b| {
         let hit = trace(a, b);
         if hit.blocked {
             all_solid.set(true);
         }
+        if hit.fraction < 1. && s.ground != Some(hit.normal) {
+            met_other.set(true);
+        }
         hit
     };
     let (mut baseline, obstructed) = slide(m, s, &baseline_trace);
+    let plain = baseline;
+    let slide_z = plain.origin[2];
+    let done = |motion| Traversal { motion, slide_z };
     if all_solid.get() {
-        return baseline;
+        return done(baseline);
     }
     if s.ground.and_then(normal).is_some()
         && let Some(snapped) = land(baseline, s.snap_down, s, trace)
@@ -343,23 +379,23 @@ pub(crate) fn traverse(
         || !s.step_height.is_finite()
         || s.step_height <= 0.
     {
-        return baseline;
+        return done(baseline);
     }
     let horizontal = libm::sqrt(dot(
         [m.velocity[0], m.velocity[1], 0.],
         [m.velocity[0], m.velocity[1], 0.],
     ));
     if horizontal <= 1e-12 {
-        return baseline;
+        return done(baseline);
     }
     let mut up = m.origin;
     up[2] += s.step_height;
     let Some((_, raised)) = sweep(m.origin, up, trace) else {
-        return baseline;
+        return done(baseline);
     };
     let rise = raised[2] - m.origin[2];
     if rise <= 0. {
-        return baseline;
+        return done(baseline);
     }
     let elevated = Motion {
         origin: raised,
@@ -377,7 +413,7 @@ pub(crate) fn traverse(
     airborne.ground = None;
     let (advanced, _) = slide(elevated, airborne, &checked_trace);
     if rejected.get() {
-        return baseline;
+        return done(baseline);
     }
     let search = rise
         + if s.snap_down.is_finite() {
@@ -386,10 +422,10 @@ pub(crate) fn traverse(
             0.
         };
     let Some(landed) = land(advanced, search, s, trace) else {
-        return baseline;
+        return done(baseline);
     };
     if landed.origin[2] - m.origin[2] > s.step_height {
-        return baseline;
+        return done(baseline);
     }
     let progress = |p: Vector| {
         ((p[0] as f64 - m.origin[0] as f64) * m.velocity[0] as f64
@@ -397,9 +433,17 @@ pub(crate) fn traverse(
             / horizontal
     };
     if progress(landed.origin) - progress(baseline.origin) > 0.001 {
-        landed
+        let slide_z = if met_other.get() {
+            slide_z
+        } else {
+            continued_slide_z(plain, landed.origin)
+        };
+        Traversal {
+            motion: landed,
+            slide_z,
+        }
     } else {
-        baseline
+        done(baseline)
     }
 }
 pub(crate) fn project_ground(v: &mut Vector, n: &Vector) {

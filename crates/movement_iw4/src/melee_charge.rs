@@ -69,7 +69,7 @@ fn project_to_ground(velocity: &mut [f32; 3], ground_trace: &[u32; 11]) {
 
 pub fn melee_charge_move<C: CollisionBackend>(
     ps: &mut PlayerState,
-    pml: &Pml,
+    pml: &mut Pml,
     mins: [f32; 3],
     maxs: [f32; 3],
     tracemask: u32,
@@ -102,7 +102,7 @@ pub fn melee_charge_move<C: CollisionBackend>(
     project_to_ground(&mut ps.velocity, &pml.ground_trace);
 
     if ps.velocity[0] != 0.0 || ps.velocity[1] != 0.0 {
-        step_slide_move(ps, pml, collision, mins, maxs, tracemask, None);
+        pml.step_view_change += step_slide_move(ps, pml, collision, mins, maxs, tracemask, None);
     }
 
     ps.velocity[0] = new_speed * dir[0];

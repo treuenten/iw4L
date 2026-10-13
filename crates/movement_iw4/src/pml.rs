@@ -16,6 +16,7 @@ pub struct Pml {
     pub mantle_movetype: Option<u8>,
     pub landing_animation: bool,
     pub fall_damage: i32,
+    pub step_view_change: f32,
 }
 
 impl Pml {

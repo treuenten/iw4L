@@ -13,7 +13,7 @@ pub struct AirMoveContext {
 
 pub fn air_move<C: CollisionBackend>(
     ps: &mut PlayerState,
-    pml: &Pml,
+    pml: &mut Pml,
     cmd: &UserCmd,
     context: AirMoveContext,
     bounds: MoveBounds,
@@ -51,7 +51,7 @@ pub fn air_move<C: CollisionBackend>(
     }
 
     let effective_gravity = adjusted_gravity(ps, context);
-    step_slide_move(
+    pml.step_view_change += step_slide_move(
         ps,
         pml,
         collision,
