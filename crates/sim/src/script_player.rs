@@ -636,12 +636,83 @@ pub(crate) fn switch_to_weapon_immediate(
 }
 
 pub(crate) fn switch_to_weapon(world: &mut FrameWorld, id: ClientId, weapon: u32) {
-    if world
-        .player(id)
-        .is_some_and(|ps| ps.weapons.contains(&(weapon as i32)))
-    {
+    if switch_target_parent(world, id, weapon).is_some() {
         world.client_meta_mut(id).controls.switch_to = weapon;
     }
+}
+
+const WEAP_INVENTORY_ALT_MODE: i32 = 3;
+
+fn alt_mode_parent(
+    weapons: &[i32; 15],
+    alt: u32,
+    preferred: u32,
+    alternate_of: impl Fn(u32) -> u32,
+) -> u32 {
+    let hangs_off = |w: u32| {
+        alt != 0 && w != 0 && w != alt && weapons.contains(&(w as i32)) && alternate_of(w) == alt
+    };
+    if hangs_off(preferred) {
+        return preferred;
+    }
+    weapons
+        .iter()
+        .filter(|&&w| w > 0)
+        .map(|&w| w as u32)
+        .find(|&w| hangs_off(w))
+        .unwrap_or(0)
+}
+
+fn switch_parent(
+    weapons: &[i32; 15],
+    target: u32,
+    target_is_alt_mode: bool,
+    alternate_of: impl Fn(u32) -> u32,
+) -> Option<u32> {
+    if target == 0 {
+        return None;
+    }
+    if weapons.contains(&(target as i32)) {
+        return Some(target);
+    }
+    if !target_is_alt_mode {
+        return None;
+    }
+    match alt_mode_parent(weapons, target, 0, alternate_of) {
+        0 => None,
+        parent => Some(parent),
+    }
+}
+
+fn switch_target_parent(world: &FrameWorld, id: ClientId, target: u32) -> Option<u32> {
+    let ps = world.player(id)?;
+    switch_parent(
+        &ps.weapons,
+        target,
+        weapon_is_alt_mode(world, target),
+        |w| world.combat_facts_for(w).map_or(0, |f| f.alternate_weapon),
+    )
+}
+
+pub(crate) fn primary_after_switch(
+    new: u32,
+    new_is_alt_mode: bool,
+    cmd_weapon: u32,
+    cmd_mapped: u32,
+    weapons: &[i32; 15],
+    alternate_of: impl Fn(u32) -> u32,
+) -> u32 {
+    if !new_is_alt_mode {
+        return new;
+    }
+    let preferred = if new == cmd_weapon { cmd_mapped } else { 0 };
+    alt_mode_parent(weapons, new, preferred, alternate_of)
+}
+
+pub(crate) fn weapon_is_alt_mode(world: &FrameWorld, weapon: u32) -> bool {
+    world
+        .combat_facts_for(weapon)
+        .is_some_and(|f| f.inventory_type == WEAP_INVENTORY_ALT_MODE)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -847,9 +918,15 @@ pub(crate) fn constrain_cmd(
     let Some(mut controls) = world.client_meta(id).map(|m| m.controls) else {
         return;
     };
-    if controls.switch_to != 0 && controls.switch_to == held {
-        controls.switch_to = 0;
-        world.client_meta_mut(id).controls.switch_to = 0;
+    let mut switch_mapped = 0;
+    if controls.switch_to != 0 {
+        match switch_target_parent(world, id, controls.switch_to) {
+            Some(parent) if controls.switch_to != held => switch_mapped = parent,
+            _ => {
+                controls.switch_to = 0;
+                world.client_meta_mut(id).controls.switch_to = 0;
+            }
+        }
     }
     if controls.frozen {
         cmd.forwardmove = 0;
@@ -875,6 +952,7 @@ pub(crate) fn constrain_cmd(
     }
     if controls.switch_to != 0 {
         cmd.weapon = controls.switch_to as u16;
+        cmd.weapon_mapped = switch_mapped as u16;
     } else if controls.switch_disabled || controls.frozen {
         cmd.weapon = held as u16;
     }
