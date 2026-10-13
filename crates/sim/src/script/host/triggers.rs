@@ -877,6 +877,33 @@ fn toucher(runtime: &mut RoundScript, frame: &FrameWorld, object: u64) -> ([f32;
     (origin, origin)
 }
 
+fn reaches(
+    runtime: &mut RoundScript,
+    frame: &FrameWorld,
+    volume: &Volume<'_>,
+    look_at: bool,
+    client: u32,
+    player: u64,
+) -> bool {
+    let (mins, maxs) = toucher(runtime, frame, player);
+    volume.touches(mins, maxs) && (!look_at || looks_into(frame, client, volume))
+}
+
+pub(crate) fn use_trigger_reach(
+    runtime: &mut RoundScript,
+    frame: &FrameWorld,
+    trigger: u64,
+    client: u32,
+    player: u64,
+) -> Option<bool> {
+    if fires(&runtime.entities.get(&trigger)?.classname) != Some(Fires::Use) {
+        return None;
+    }
+    let volume = volume(runtime, frame, trigger)?;
+    let look_at = runtime.require_look_at.contains(&trigger);
+    Some(reaches(runtime, frame, &volume, look_at, client, player))
+}
+
 pub(crate) fn entity_bounds(world: &mut World, object: u64) -> ([f32; 3], [f32; 3]) {
     let runtime = world.resource::<RoundScript>();
     if runtime.player_client(object).is_some() {
@@ -941,12 +968,19 @@ pub(crate) fn dispatch_triggers(world: &mut World) {
             .filter(|(_, _, held)| *held)
             .map(|(client, _, _)| *client)
             .collect();
+        let mut use_presses = Vec::new();
         for (client, player) in &pressed {
-            if let Some(usable) = runtime.use_selected.get(client)
-                && eligible(&runtime, &frame, *usable, *client, true)
-                && fires(&runtime.entities[usable].classname) != Some(Fires::Use)
+            let item = frame
+                .player(crate::ClientId(*client))
+                .is_some_and(|ps| crate::item::hints_item(ps.cursor_hint));
+            let selected = runtime.use_selected.get(client).copied();
+            if let Some(usable) = selected
+                && eligible(&runtime, &frame, usable, *client, true)
+                && fires(&runtime.entities[&usable].classname) != Some(Fires::Use)
             {
-                raised.push((*usable, *player));
+                raised.push((usable, *player));
+            } else if !item {
+                use_presses.push((*client, *player, selected));
             }
         }
         let triggers: Vec<(u64, Fires)> = runtime
@@ -960,7 +994,11 @@ pub(crate) fn dispatch_triggers(world: &mut World) {
                 continue;
             };
             let candidates: Vec<(u32, u64)> = match kind {
-                Fires::Use => pressed.clone(),
+                Fires::Use => use_presses
+                    .iter()
+                    .filter(|(_, _, selected)| selected.is_none_or(|selected| selected == trigger))
+                    .map(|(client, player, _)| (*client, *player))
+                    .collect(),
                 Fires::Touch | Fires::Once => players
                     .iter()
                     .map(|(client, object, _)| (*client, *object))
@@ -971,8 +1009,7 @@ pub(crate) fn dispatch_triggers(world: &mut World) {
                 if !eligible(&runtime, &frame, trigger, client, kind == Fires::Use) {
                     continue;
                 }
-                let (mins, maxs) = toucher(&mut runtime, &frame, player);
-                if !volume.touches(mins, maxs) || look_at && !looks_into(&frame, client, &volume) {
+                if !reaches(&mut runtime, &frame, &volume, look_at, client, player) {
                     continue;
                 }
                 raised.push((trigger, player));
