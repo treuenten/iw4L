@@ -32,6 +32,7 @@ pub(crate) struct StepRequest {
     pub(crate) reason: crate::StepReason,
     action_results: Vec<ActionResult>,
     fire_results: Vec<crate::FireCommandResult>,
+    step_changes: Vec<crate::StepChange>,
     output: Option<TickResult>,
 }
 
@@ -87,6 +88,7 @@ pub(crate) fn run_schedule(
         reason,
         action_results: Vec::new(),
         fire_results: Vec::new(),
+        step_changes: Vec::new(),
         output: None,
     });
     schedule.run(ecs);
@@ -282,6 +284,7 @@ fn run_players_system(ecs: &mut World) {
     let original_buttons = world.old_buttons_mut().clone();
     let original_angles = world.old_cmd_angles_mut().clone();
     let mut consumed = Vec::new();
+    let mut step_changes = Vec::new();
     let mut fire_results: Vec<_> = input
         .cmds
         .iter()
@@ -446,6 +449,7 @@ fn run_players_system(ecs: &mut World) {
                 force_movement_anim,
                 landing_animation,
                 fall_damage,
+                step_view_change,
             ) = {
                 let ps = world
                     .player_mut(*id)
@@ -488,6 +492,7 @@ fn run_players_system(ecs: &mut World) {
                     pml.mantle_movetype.is_some(),
                     pml.landing_animation,
                     pml.fall_damage,
+                    pml.step_view_change,
                 )
             };
             world
@@ -538,6 +543,13 @@ fn run_players_system(ecs: &mut World) {
                 }
             }
             world.set_pmove_walking(*id, walking);
+            if step_view_change != 0.0 {
+                step_changes.push(crate::StepChange {
+                    client: *id,
+                    command_time: cmd.server_time,
+                    change: step_view_change,
+                });
+            }
             world.link_player_area(*id, linked_bounds);
 
             let shots = advance_weapon_command(
@@ -601,6 +613,7 @@ fn run_players_system(ecs: &mut World) {
         request.input.cmds = consumed;
     }
     request.fire_results = fire_results;
+    request.step_changes = step_changes;
 }
 
 fn apply_fall_damage(world: &mut FrameWorld, tick: Tick, id: ClientId, amount: i32, at: [f32; 3]) {
@@ -769,11 +782,13 @@ fn publish_snapshot_system(ecs: &mut World) {
     let mut request = ecs.resource_mut::<StepRequest>();
     let action_results = std::mem::take(&mut request.action_results);
     let fire_results = std::mem::take(&mut request.fire_results);
+    let step_changes = std::mem::take(&mut request.step_changes);
     request.output = Some(TickResult {
         input: request.input.clone(),
         snapshot,
         action_results,
         fire_results,
+        step_changes,
         effects,
         weapon_script_names,
         pending_final_kill,

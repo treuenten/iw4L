@@ -386,6 +386,7 @@ pub(crate) fn advance_weapon_command(
                     mantle_movetype: None,
                     landing_animation: false,
                     fall_damage: 0,
+                    step_view_change: 0.0,
                 };
                 is_in_air(&ps, &pml)
             },

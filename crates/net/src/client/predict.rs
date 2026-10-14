@@ -8,6 +8,7 @@ use std::collections::VecDeque;
 
 use crate::ServerTime;
 use crate::client::predicted_error::PredictedError;
+use crate::client::step_view::{StepView, smooths_pm_type};
 use crate::reconciliation::CorrectionBoundary;
 use crate::transport::netfields::{Deviation, ps_deviation};
 
@@ -215,6 +216,7 @@ pub struct ClientPrediction {
 
     snapshots_since_ack: u32,
     predicted_error: PredictedError,
+    step_view: StepView,
     metrics: PredictionMetrics,
 
     predicted_local: Option<PlayerState>,
@@ -250,6 +252,7 @@ impl ClientPrediction {
             next_tick: 0,
             snapshots_since_ack: 0,
             predicted_error: PredictedError::default(),
+            step_view: StepView::default(),
             metrics: PredictionMetrics::default(),
             predicted_local: None,
             last_cmd: None,
@@ -301,6 +304,19 @@ impl ClientPrediction {
 
     pub fn predicted_error_mut(&mut self) -> &mut PredictedError {
         &mut self.predicted_error
+    }
+
+    pub fn finish_step_view(&mut self, now_ms: i32, follows_local: bool) {
+        let eligible = follows_local
+            && self.armed
+            && self
+                .predicted_local
+                .is_some_and(|ps| smooths_pm_type(ps.pm_type));
+        self.step_view.end_frame(now_ms, eligible);
+    }
+
+    pub fn step_view_offset(&self, now_ms: i32) -> f32 {
+        self.step_view.offset(now_ms)
     }
 
     pub fn predicted_local(&self) -> Option<&PlayerState> {
@@ -501,6 +517,8 @@ impl ClientPrediction {
             self.history.clear();
             self.predicted_local = authoritative;
             self.next_tick = boundary.replay_tick.0;
+            self.step_view
+                .suppress(self.predicted_local.map(|ps| ps.command_time));
         } else {
             let (ack_outcome, source) = self.apply_ack(ack);
             outcome.acked = ack_outcome.acked;
@@ -530,11 +548,13 @@ impl ClientPrediction {
             (ps.other_flags & (other_flags::PLAYER | other_flags::DEAD_KILLCAM_TPV)) != 0
         });
         let post_origin = self.predicted_local.map(|ps| ps.origin);
+        let latest_cmd = self.predicted_local.map(|ps| ps.command_time);
         if player_view && in_now && !self.had_local_last_snap {
             if let (Some(pre), Some(post)) = (pre_view, post_origin) {
                 self.predicted_error.note_teleport_delta(pre, post);
             }
             self.predicted_error.reset_new_entity();
+            self.step_view.suppress(latest_cmd);
         } else if let (Some(pre), Some(post)) = (pre_view, post_origin) {
             let teleported = match (pre_e_flags, self.predicted_local.map(|ps| ps.e_flags)) {
                 (Some(a), Some(b)) => (a ^ b) & eflags::TELEPORT != 0,
@@ -543,6 +563,7 @@ impl ClientPrediction {
             if teleported {
                 self.predicted_error.note_teleport_delta(pre, post);
                 self.predicted_error.reset();
+                self.step_view.suppress(latest_cmd);
             } else if pre_state
                 .zip(self.predicted_local)
                 .is_some_and(|(pre, post)| pre.command_time == post.command_time)
@@ -705,8 +726,16 @@ impl ClientPrediction {
             cmd,
             sim::CommandSequence(sequence.0),
         ));
-        let _ = sim::try_step(&mut self.world, tick, &input, msec, reason);
+        let result = sim::try_step(&mut self.world, tick, &input, msec, reason);
         self.tick_input = input;
+        let step = result.as_ref().map_or(0.0, |result| {
+            result
+                .step_changes
+                .iter()
+                .find(|step| step.client == local && step.command_time == cmd.server_time)
+                .map_or(0.0, |step| step.change)
+        });
+        self.step_view.note_command(cmd.server_time, step);
         self.world.player(local).copied()
     }
 }

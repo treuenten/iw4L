@@ -193,5 +193,5 @@ pub use input::PlayerProfile;
 mod tick_result;
 pub use tick_result::{
     ActionOutcome, ActionResult, FireCommandOutcome, FireCommandRefusal, FireCommandResult,
-    TickEffects, TickResult,
+    StepChange, TickEffects, TickResult,
 };

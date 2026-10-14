@@ -40,6 +40,13 @@ pub struct FireCommandResult {
     pub outcome: FireCommandOutcome,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StepChange {
+    pub client: ClientId,
+    pub command_time: i32,
+    pub change: f32,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct TickEffects {
     pub prints: Vec<crate::PendingPrint>,
@@ -55,6 +62,7 @@ pub struct TickResult {
     pub snapshot: Snapshot,
     pub action_results: Vec<ActionResult>,
     pub fire_results: Vec<FireCommandResult>,
+    pub step_changes: Vec<StepChange>,
     pub effects: TickEffects,
     pub weapon_script_names: Arc<[String]>,
     pub pending_final_kill: Option<(ClientId, ClientId)>,
