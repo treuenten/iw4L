@@ -134,6 +134,7 @@ impl ZoneLane for Iw5Lane {
         image: &ZoneImage,
         progress: &LoadProgress,
         shared_surfaces: asset_model::SharedXModelSurfaces,
+        _common_phys_presets: &[asset_world::OwnedPhysPreset],
         material_seed: asset_material::MaterialCatalog,
         common_film_visions: &super::FilmVisionCatalog,
     ) -> LoadedWorld {

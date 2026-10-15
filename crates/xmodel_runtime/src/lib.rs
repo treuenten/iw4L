@@ -19,9 +19,9 @@ pub use dobj::{
 pub use dobj_runtime::{DObjAnimRuntime, DObjReuseKey, model_token, reuse_matches};
 pub use retained::{
     BoneCollision, CollSurfCollision, CollTri, CollisionBone, DObjPoseRequest, MaterializeError,
-    ModelMovementBrush, RetainedModelCapability, TagRotation, collision_bone_from_local_box,
-    collision_dobj_with_controller, collision_models, collision_models_with_controller, pose_dobj,
-    pose_dobj_with_controller,
+    ModelMovementBrush, ModelPhys, RetainedModelCapability, TagRotation,
+    collision_bone_from_local_box, collision_dobj_with_controller, collision_models,
+    collision_models_with_controller, pose_dobj, pose_dobj_with_controller,
 };
 pub use semantic::{
     DObjCompositionDescriptor, DObjModelDescriptor, DObjSemanticState, SemanticResolveError,

@@ -326,6 +326,40 @@ impl FrameWorld<'_> {
         true
     }
 
+    pub(crate) fn set_script_mover_body_pose(
+        &mut self,
+        number: i32,
+        time_ms: i32,
+        origin: [f32; 3],
+        angles: [f32; 3],
+        body: crate::script::host::mechanics::BodyTrajectory,
+    ) -> bool {
+        let Some(mover) = self.script_mover_mut_by_number(number) else {
+            return false;
+        };
+        let state = &mut mover.state;
+        let moving = body.falling || body.velocity != [0.0; 3];
+        state.tr_type = match (moving, body.falling) {
+            (false, _) => entity_iw4::TR_STATIONARY,
+            (true, true) => entity_iw4::TR_GRAVITY,
+            (true, false) => entity_iw4::TR_LINEAR,
+        };
+        state.tr_time = time_ms;
+        state.tr_duration = 0;
+        state.tr_base = origin;
+        state.tr_delta = if moving { body.velocity } else { [0.0; 3] };
+        state.apos_tr_type = if body.angle_rates == [0.0; 3] {
+            entity_iw4::TR_STATIONARY
+        } else {
+            entity_iw4::TR_LINEAR
+        };
+        state.apos_tr_time = time_ms;
+        state.apos_tr_duration = 0;
+        state.apos_tr_base = angles;
+        state.apos_tr_delta = body.angle_rates;
+        true
+    }
+
     pub(crate) fn dropped_item_count(&self) -> usize {
         dropped_item_row_count(self.ecs)
     }

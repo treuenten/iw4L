@@ -15,6 +15,7 @@ pub mod players;
 pub mod presence;
 pub mod registry;
 pub mod restart;
+mod rigid_body;
 mod sentry_placement;
 pub mod spectators;
 pub mod tables;

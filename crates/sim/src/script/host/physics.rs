@@ -83,19 +83,12 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
         );
         Ok(Value::Undefined)
     });
-    for name in ["physicslaunchserver", "physicslaunchclient"] {
-        registry.register(Method, name, |world, receiver, args| {
-            let object = object_of(world, receiver)?;
-            vector(args, 0)?;
-            let force = vector(args, 1)?;
-            world
-                .resource_mut::<super::mechanics::Mechanics>()
-                .launch(object, force);
-            let mut runtime = world.resource_mut::<RoundScript>();
-            runtime.entities.get_mut(&object).unwrap().linked_to = None;
-            Ok(Value::Undefined)
-        });
-    }
+    registry.register(Method, "physicslaunchserver", |world, receiver, args| {
+        super::mechanics::physics_launch(world, receiver, args, false)
+    });
+    registry.register(Method, "physicslaunchclient", |world, receiver, args| {
+        super::mechanics::physics_launch(world, receiver, args, true)
+    });
     registry.register(Method, "makeusable", |world, receiver, _| {
         usable(world, receiver)?.enabled = true;
         Ok(Value::Undefined)

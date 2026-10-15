@@ -79,6 +79,7 @@ pub(super) struct CommonProducts {
     pub(super) t5_scene_models: asset_world::MapXModelSceneCatalog,
     pub(super) material_seed: MaterialCatalog,
     pub(super) shared_surfaces: asset_model::SharedXModelSurfaces,
+    pub(super) phys_presets: Vec<asset_world::OwnedPhysPreset>,
     pub(super) scene_models: asset_world::MapXModelSceneCatalog,
     pub(super) light_defs: Vec<asset_world::CapturedLightDef>,
     pub(super) pen_table: weapon_iw4::PenetrationDepthTable,
@@ -555,6 +556,7 @@ async fn prepare_common(key: CommonKey) -> Arc<CommonSet> {
     }
 
     let mut shared_surfaces = asset_model::SharedXModelSurfaces::default();
+    let mut common_phys_presets = Vec::new();
     let mut common_scene_models = asset_world::MapXModelSceneCatalog::default();
     let mut common_light_defs = startup_light_defs;
     let mut common_pen_table = weapon_iw4::PenetrationDepthTable::empty();
@@ -594,6 +596,7 @@ async fn prepare_common(key: CommonKey) -> Arc<CommonSet> {
                 lane(image.game).load_common_mp(&path, &image, &progress, true, material_seed);
             fpv_plan = census.pending_images.take().filter(|plan| !plan.is_empty());
             shared_surfaces = census.shared_surfaces;
+            common_phys_presets = census.phys_presets;
             common_scene_models = census.scene_models;
             common_light_defs.extend(census.light_defs);
             common_pen_table = census.pen_table;
@@ -918,6 +921,7 @@ async fn prepare_common(key: CommonKey) -> Arc<CommonSet> {
             t5_scene_models,
             material_seed,
             shared_surfaces,
+            phys_presets: common_phys_presets,
             scene_models: common_scene_models,
             light_defs: common_light_defs,
             pen_table: common_pen_table,

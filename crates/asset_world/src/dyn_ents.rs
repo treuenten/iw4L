@@ -92,10 +92,14 @@ pub struct OwnedPhysPreset {
     pub per_surface_snd_alias: bool,
 }
 
+const PRESET_REFERENCE_PREFIX: char = ',';
+
 #[derive(Clone, Debug, Default)]
 pub struct PhysPresetCatalog {
     direct: HashMap<Ptr, OwnedPhysPreset>,
     aliases: HashMap<Ptr, Ptr>,
+    references: HashMap<Ptr, OwnedPhysPreset>,
+    named: HashMap<String, OwnedPhysPreset>,
 }
 
 impl PhysPresetCatalog {
@@ -106,25 +110,84 @@ impl PhysPresetCatalog {
         let Some(owned) = read_phys_preset(stream, geometry) else {
             return;
         };
-        self.direct.insert(slot, owned.clone());
-        if let Some(insert_slot) = insert_slot {
-            self.direct.insert(insert_slot, owned);
+        self.insert(slot, insert_slot, owned);
+    }
+
+    fn insert(&mut self, slot: Ptr, insert_slot: Option<Ptr>, owned: OwnedPhysPreset) {
+        let reference = owned.name.starts_with(PRESET_REFERENCE_PREFIX);
+        if !reference {
+            self.named
+                .entry(owned.name.clone())
+                .or_insert_with(|| owned.clone());
+        }
+        for slot in std::iter::once(slot).chain(insert_slot) {
+            self.clear_slot(slot);
+            if reference {
+                self.references.insert(slot, owned.clone());
+            } else {
+                self.direct.insert(slot, owned.clone());
+            }
         }
     }
 
+    // Every asset loads into the temp block from its start, so one model's
+    // preset field sits at the same slot as the next model's: a later binding
+    // must replace an earlier one.
+    fn clear_slot(&mut self, slot: Ptr) {
+        self.direct.remove(&slot);
+        self.references.remove(&slot);
+        self.aliases.remove(&slot);
+    }
+
+    pub fn seed_named(&mut self, presets: impl IntoIterator<Item = OwnedPhysPreset>) {
+        for preset in presets {
+            self.named.entry(preset.name.clone()).or_insert(preset);
+        }
+    }
+
+    pub fn named_presets(&self) -> Vec<OwnedPhysPreset> {
+        self.named.values().cloned().collect()
+    }
+
     pub fn alias(&mut self, slot: Ptr, target: Ptr) {
+        self.clear_slot(slot);
         self.aliases.insert(slot, target);
     }
 
     pub fn at_slot(&self, slot: Ptr) -> Option<&OwnedPhysPreset> {
+        let at = self.target(slot)?;
+        if let Some(preset) = self.direct.get(&at) {
+            return Some(preset);
+        }
+        let stand_in = self.references.get(&at)?;
+        self.named
+            .get(stand_in.name.strip_prefix(PRESET_REFERENCE_PREFIX)?)
+    }
+
+    pub fn at_slot_in_zone(&self, slot: Ptr) -> Option<&OwnedPhysPreset> {
+        let at = self.target(slot)?;
+        self.direct.get(&at).or_else(|| self.references.get(&at))
+    }
+
+    fn target(&self, slot: Ptr) -> Option<Ptr> {
         let mut at = slot;
         for _ in 0..self.aliases.len().saturating_add(1) {
-            if let Some(preset) = self.direct.get(&at) {
-                return Some(preset);
+            if self.direct.contains_key(&at) || self.references.contains_key(&at) {
+                return Some(at);
             }
             at = *self.aliases.get(&at)?;
         }
         None
+    }
+
+    pub fn model_phys(&self, slot: Option<Ptr>) -> Option<xmodel_runtime::ModelPhys> {
+        let preset = self.at_slot(slot?)?;
+        (preset.mass.is_finite() && preset.mass > 0.0).then_some(xmodel_runtime::ModelPhys {
+            mass: preset.mass,
+            bounce: preset.bounce,
+            friction: preset.friction,
+            explosive_force_scale: preset.explosive_force_scale,
+        })
     }
 
     pub fn len(&self) -> usize {
